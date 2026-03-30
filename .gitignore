@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+*.egg-info/
+# 忽略无关文件
+.DS_Store
+Thumbs.db
+*.log
+*.tmp
+.vscode/
+.idea/
+.env
+.cache/
+build/
+dist/

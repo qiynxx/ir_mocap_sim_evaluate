@@ -1,0 +1,108 @@
+{
+  "calibration_date": "2026-03-25T17:08:17.366976",
+  "sim_parameters": {
+    "fov_degrees": 60.0,
+    "baseline_m": 0.0735,
+    "note": "Simulation calibration \u2013 ideal pinhole, zero distortion, symmetric placement"
+  },
+  "cameras": {
+    "cam2_ov9281_0": {
+      "sensor_type": "camera",
+      "comment": "sim left camera",
+      "T_BS": {
+        "cols": 4,
+        "rows": 4,
+        "data": [
+          1,
+          0,
+          0,
+          0.03675,
+          0,
+          1,
+          0,
+          0,
+          0,
+          0,
+          1,
+          0,
+          0,
+          0,
+          0,
+          1
+        ]
+      },
+      "rate_hz": 30,
+      "resolution": [
+        1280,
+        800
+      ],
+      "camera_model": "pinhole",
+      "intrinsics": [
+        1108.5125168440816,
+        1108.5125168440816,
+        633.6,
+        393.8
+      ],
+      "distortion_model": "radial-tangential",
+      "distortion_coefficients": [
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "calibration_resolution": [
+        1280,
+        800
+      ]
+    },
+    "cam3_ov9281_1": {
+      "sensor_type": "camera",
+      "comment": "sim right camera",
+      "T_BS": {
+        "cols": 4,
+        "rows": 4,
+        "data": [
+          1,
+          0,
+          0,
+          -0.03675,
+          0,
+          1,
+          0,
+          0,
+          0,
+          0,
+          1,
+          0,
+          0,
+          0,
+          0,
+          1
+        ]
+      },
+      "rate_hz": 30,
+      "resolution": [
+        1280,
+        800
+      ],
+      "camera_model": "pinhole",
+      "intrinsics": [
+        1108.5125168440816,
+        1108.5125168440816,
+        633.6,
+        393.8
+      ],
+      "distortion_model": "radial-tangential",
+      "distortion_coefficients": [
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "calibration_resolution": [
+        1280,
+        800
+      ]
+    }
+  }
+}

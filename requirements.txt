@@ -1,0 +1,7 @@
+numpy
+opencv-python
+pygame
+PyOpenGL
+PyOpenGL-accelerate
+pyzmq
+trimesh
