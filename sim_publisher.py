@@ -286,25 +286,30 @@ class TrajectoryPlayer:
 
 
 # ---------------------------------------------------------------------------
-# UI Theme (dark)
+# UI Theme (refined dark)
 # ---------------------------------------------------------------------------
 class Theme:
-    BG        = (18, 18, 24)
-    PANEL     = (28, 28, 36)
-    BORDER    = (60, 60, 80)
-    TEXT      = (248, 250, 252)
-    TEXT_DIM  = (148, 163, 184)
-    ACCENT    = (99, 102, 241)
-    SUCCESS   = (34, 197, 94)
-    WARNING   = (251, 191, 36)
-    ERROR     = (239, 68, 68)
-    INFO      = (59, 130, 246)
+    BG        = (16, 18, 27)
+    PANEL     = (24, 27, 40)
+    BORDER    = (48, 54, 76)
+    TEXT      = (225, 232, 245)
+    TEXT_DIM  = (125, 138, 165)
+    ACCENT    = (105, 115, 255)
+    SUCCESS   = (52, 211, 153)
+    WARNING   = (250, 190, 40)
+    ERROR     = (248, 113, 113)
+    INFO      = (96, 165, 250)
     LED       = (255, 100, 100)
-    RECON     = (100, 200, 255)
-    NOISE_CLR = (255, 180, 100)
-    SELECTED  = (255, 215, 0)
-    GRID_MAJ  = (55, 55, 70)
-    GRID_MIN  = (35, 35, 45)
+    RECON     = (103, 232, 249)
+    NOISE_CLR = (251, 146, 60)
+    SELECTED  = (250, 204, 21)
+    GRID_MAJ  = (45, 50, 68)
+    GRID_MIN  = (30, 34, 48)
+    TITLE_BG  = (30, 34, 52)
+    TITLE_TXT = (225, 232, 245)
+    SECTION   = (96, 165, 250)
+    PANEL_ACC = (32, 38, 58)
+    IR_BORDER = (70, 140, 220)
 
 
 # ---------------------------------------------------------------------------
@@ -719,30 +724,30 @@ class SimPublisher:
         glRotatef(90, 0, 1, 0)
 
         # Grid
+        glEnable(GL_BLEND)
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
         glBegin(GL_LINES)
-        glColor4f(*[c / 255.0 for c in Theme.GRID_MIN], 0.5)
+        glColor4f(*[c / 255.0 for c in Theme.GRID_MIN], 0.6)
         for i in range(-10, 11):
             if i % 5 != 0:
                 glVertex3f(-2, i * 0.2, -0.5); glVertex3f(2, i * 0.2, -0.5)
                 glVertex3f(i * 0.2, -2, -0.5); glVertex3f(i * 0.2, 2, -0.5)
         glEnd()
         glBegin(GL_LINES)
-        glColor4f(*[c / 255.0 for c in Theme.GRID_MAJ], 0.8)
+        glColor4f(*[c / 255.0 for c in Theme.GRID_MAJ], 0.85)
         for i in range(-2, 3):
             glVertex3f(-2, i, -0.5); glVertex3f(2, i, -0.5)
             glVertex3f(i, -2, -0.5); glVertex3f(i, 2, -0.5)
         glEnd()
 
         # Axes
-        glEnable(GL_BLEND)
-        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
-        glLineWidth(2)
+        glLineWidth(2.5)
         glBegin(GL_LINES)
-        glColor4f(*[c / 255.0 for c in Theme.ERROR], 0.8)
+        glColor4f(0.95, 0.25, 0.25, 0.9)
         glVertex3f(0, 0, 0); glVertex3f(0.5, 0, 0)
-        glColor4f(*[c / 255.0 for c in Theme.SUCCESS], 0.8)
+        glColor4f(0.2, 0.85, 0.55, 0.9)
         glVertex3f(0, 0, 0); glVertex3f(0, 0.5, 0)
-        glColor4f(*[c / 255.0 for c in Theme.INFO], 0.8)
+        glColor4f(0.3, 0.55, 1.0, 0.9)
         glVertex3f(0, 0, 0); glVertex3f(0, 0, 0.5)
         glEnd()
         glLineWidth(1)
@@ -750,8 +755,8 @@ class SimPublisher:
 
         # Cameras (small frustums with L/R labels)
         for pos, label, clr in [
-            (self.cam.pos_left,  "L", (0.3, 0.8, 1.0)),
-            (self.cam.pos_right, "R", (1.0, 0.6, 0.3)),
+            (self.cam.pos_left,  "L", (0.3, 0.7, 1.0)),
+            (self.cam.pos_right, "R", (1.0, 0.65, 0.3)),
         ]:
             glColor3f(*clr)
             glPushMatrix()
@@ -907,7 +912,26 @@ class SimPublisher:
         glPushMatrix()
         glLoadIdentity()
         glDisable(GL_DEPTH_TEST)
+        glDisable(GL_LIGHTING)
 
+        glEnable(GL_BLEND)
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
+
+        # Shadow (drawn first, behind everything)
+        glColor4f(0.0, 0.0, 0.0, 0.35)
+        glBegin(GL_QUADS)
+        glVertex2f(x + 3, y + 3); glVertex2f(x + w + 3, y + 3)
+        glVertex2f(x + w + 3, y + h + 3); glVertex2f(x + 3, y + h + 3)
+        glEnd()
+
+        # Dark background behind image area
+        glColor4f(0.04, 0.04, 0.06, 1.0)
+        glBegin(GL_QUADS)
+        glVertex2f(x, y); glVertex2f(x + w, y)
+        glVertex2f(x + w, y + h); glVertex2f(x, y + h)
+        glEnd()
+
+        # Image texture
         if ir_img is not None:
             disp = cv2.resize(ir_img, (w, h), interpolation=cv2.INTER_LINEAR)
             rgba = np.empty((h, w, 4), dtype=np.uint8)
@@ -934,13 +958,11 @@ class SimPublisher:
             glDisable(GL_TEXTURE_2D)
             glDeleteTextures([tex])
 
-        # Blue circle markers for detected LEDs
+        # LED circle markers
         if led_positions:
             sx = w / self.cam.width
             sy = h / self.cam.height
-            glEnable(GL_BLEND)
-            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
-            glColor4f(0.4, 0.7, 1.0, 1.0)
+            glColor4f(0.35, 0.75, 1.0, 0.9)
             glLineWidth(1.5)
             radius = 5
             n_seg = 20
@@ -954,23 +976,35 @@ class SimPublisher:
                                cy + radius * math.sin(angle))
                 glEnd()
             glLineWidth(1)
-            glDisable(GL_BLEND)
 
-        # Border
-        glEnable(GL_BLEND)
-        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
-        glColor4f(*[c / 255.0 for c in Theme.SUCCESS], 0.8)
-        glLineWidth(2)
+        # Border frame (double line effect)
+        glColor4f(*[c / 255.0 for c in Theme.IR_BORDER], 0.5)
+        glLineWidth(3)
         glBegin(GL_LINE_LOOP)
         glVertex2f(x, y); glVertex2f(x + w, y)
         glVertex2f(x + w, y + h); glVertex2f(x, y + h)
         glEnd()
+        glColor4f(*[c / 255.0 for c in Theme.IR_BORDER], 0.9)
         glLineWidth(1)
-        glDisable(GL_BLEND)
+        glBegin(GL_LINE_LOOP)
+        glVertex2f(x, y); glVertex2f(x + w, y)
+        glVertex2f(x + w, y + h); glVertex2f(x, y + h)
+        glEnd()
 
-        self.text.draw(label, x + 6, y + 4, Theme.TEXT, "small")
+        # Label tab
+        label_w = len(label) * 7 + 16
+        label_h = 20
+        glColor4f(*[c / 255.0 for c in Theme.IR_BORDER], 0.85)
+        glBegin(GL_QUADS)
+        glVertex2f(x, y - label_h); glVertex2f(x + label_w, y - label_h)
+        glVertex2f(x + label_w, y); glVertex2f(x, y)
+        glEnd()
+
+        glDisable(GL_BLEND)
+        self.text.draw(label, x + 8, y - label_h + 3, Theme.TITLE_TXT, "small")
 
         glEnable(GL_DEPTH_TEST)
+        glEnable(GL_LIGHTING)
         glMatrixMode(GL_PROJECTION)
         glPopMatrix()
         glMatrixMode(GL_MODELVIEW)
@@ -990,108 +1024,102 @@ class SimPublisher:
 
         fps = self.clock.get_fps()
 
-        # Top bar
-        self._draw_rect(10, 10, self.win_w - 20, 36, Theme.PANEL, 0.9)
-        self.text.draw("MOCAP SIM PUBLISHER", 20, 16, Theme.TEXT, "medium")
-        self.text.draw(f"ZMQ  Frames: {self.frames_sent}", 250, 18, Theme.SUCCESS, "small")
+        # ---- Top bar ----
+        bar_h = 32
+        self._draw_rect(0, 0, self.win_w, bar_h, Theme.TITLE_BG, 0.95)
+        # Accent line at bottom of title bar
+        glEnable(GL_BLEND)
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
+        glColor4f(*[c / 255.0 for c in Theme.ACCENT], 0.6)
+        glLineWidth(2)
+        glBegin(GL_LINES)
+        glVertex2f(0, bar_h); glVertex2f(self.win_w, bar_h)
+        glEnd()
+        glLineWidth(1)
+        glDisable(GL_BLEND)
+
+        self.text.draw("MOCAP SIM", 12, 8, Theme.ACCENT, "medium")
+        self.text.draw(f"Frames {self.frames_sent}", 160, 10,
+                       Theme.SUCCESS, "small")
         self.text.draw(
-            f"Cam: {self.cam.width}x{self.cam.height}  "
-            f"FOV: {self.cam.fov:.0f}°  "
-            f"BL: {self.cam.baseline * 100:.1f}cm",
-            500, 18, Theme.TEXT_DIM, "small"
+            f"{self.cam.width}x{self.cam.height}  "
+            f"FOV {self.cam.fov:.0f}\u00b0  "
+            f"BL {self.cam.baseline * 100:.1f}cm",
+            340, 10, Theme.TEXT_DIM, "small"
         )
         fps_color = Theme.SUCCESS if fps > 25 else (Theme.WARNING if fps > 15 else Theme.ERROR)
-        self.text.draw(f"FPS: {fps:.0f}", self.win_w - 100, 18, fps_color, "normal")
+        self.text.draw(f"{fps:.0f} FPS", self.win_w - 70, 8, fps_color, "normal")
 
-        # Left panel – controls + info
-        px, py = 10, 56
-        pw = 280
+        # ---- Left panel (compact: status only, no help text) ----
+        px, py = 8, 40
+        pw = 260
+        # Compute panel height dynamically
+        y_cursor = py + 10
+        section_h = (
+            18 + 14 * 3 + 6    # MODE
+            + 18 + 14 * 3 + 6  # CAMERAS
+            + 18 + len(self.boards) * 56 + 4  # BOARDS
+        )
+        ph = section_h + 16
+        ir_limit = self.win_h - 220 - 8  # don't overlap bottom IR previews
+        ph = min(ph, ir_limit - py)
 
-        content_lines = 12 + 3 + 3 + 4 + len(self.boards) * 5 + 4
-        ph = max(440, content_lines * 15 + 40)
-        self._draw_rect(px, py, pw, ph, Theme.PANEL, 0.85)
-        y = py + 12
+        self._draw_panel(px, py, pw, ph, alpha=0.88, accent_color=Theme.ACCENT)
+        y = py + 10
 
-        self.text.draw("MOUSE CONTROLS", px + 12, y, Theme.INFO, "medium"); y += 20
-        for key, desc in [
-            ("Left-drag", "Move board XY"),
-            ("Shift+L-drag", "Rotate Pitch/Yaw"),
-            ("Ctrl+L-drag", "Rotate Roll"),
-            ("Ctrl+Scroll", "Move board Z"),
-            ("Right-drag", "Orbit view"),
-            ("Scroll", "Zoom"),
-        ]:
-            self.text.draw(key, px + 14, y, Theme.ACCENT, "small")
-            self.text.draw(desc, px + 115, y, Theme.TEXT_DIM, "small")
-            y += 16
-        y += 4
-
-        self.text.draw("KEYS", px + 12, y, Theme.INFO, "medium"); y += 20
-        for key, desc in [
-            ("Tab/1/2", "Select board"),
-            ("WASD+QE", "Fine move"),
-            ("RFTGYH", "Fine rotate"),
-            ("F1-F9", "Preset poses"),
-            ("P", "Play trajectory"),
-            ("N / V", "Noise / Eval"),
-        ]:
-            self.text.draw(key, px + 14, y, Theme.ACCENT, "small")
-            self.text.draw(desc, px + 115, y, Theme.TEXT_DIM, "small")
-            y += 16
-        y += 6
-
-        # Trajectory / preset status
-        self.text.draw("MODE", px + 12, y, (255, 120, 200), "medium"); y += 20
+        # Mode section
+        self.text.draw("STATUS", px + 10, y, Theme.SECTION, "small"); y += 18
         traj = self.trajectory
-        if traj.active:
-            traj_clr = Theme.SUCCESS
-        elif traj.waypoints:
-            traj_clr = Theme.WARNING
-        else:
-            traj_clr = Theme.TEXT_DIM
-        self.text.draw(f"Traj: {traj.status_text}", px + 14, y, traj_clr, "small"); y += 16
+        traj_clr = Theme.SUCCESS if traj.active else (Theme.WARNING if traj.waypoints else Theme.TEXT_DIM)
+        self.text.draw(f"Traj: {traj.status_text}", px + 12, y, traj_clr, "small"); y += 14
         if self._preset_index >= 0:
             pname = PRESET_POSES[self._preset_index]["name"]
             self.text.draw(f"Preset: F{self._preset_index+1} {pname}",
-                           px + 14, y, Theme.ACCENT, "small")
+                           px + 12, y, Theme.ACCENT, "small")
         else:
-            self.text.draw("Preset: --", px + 14, y, Theme.TEXT_DIM, "small")
-        y += 16
-
-        # Noise status
+            self.text.draw("Preset: --", px + 12, y, Theme.TEXT_DIM, "small")
+        y += 14
         st = "ON" if self.noise_gen.active else "OFF"
-        sc = Theme.SUCCESS if self.noise_gen.active else Theme.ERROR
-        self.text.draw(f"Noise: {st}", px + 14, y, sc, "small"); y += 18
+        sc = Theme.SUCCESS if self.noise_gen.active else Theme.TEXT_DIM
+        self.text.draw(f"Noise: {st}", px + 12, y, sc, "small"); y += 16
 
-        # Camera positions
-        self.text.draw("CAMERAS", px + 12, y, Theme.INFO, "medium"); y += 20
+        self._draw_separator(px + 10, y, pw - 20); y += 6
+
+        # Camera section
+        self.text.draw("CAMERAS", px + 10, y, Theme.SECTION, "small"); y += 18
         pL = self.cam.pos_left
         pR = self.cam.pos_right
         self.text.draw(f"L [{pL[0]:.3f}, {pL[1]:.3f}, {pL[2]:.3f}]",
-                       px + 14, y, (77, 204, 255), "small"); y += 15
+                       px + 12, y, (80, 180, 255), "small"); y += 14
         self.text.draw(f"R [{pR[0]:.3f}, {pR[1]:.3f}, {pR[2]:.3f}]",
-                       px + 14, y, (255, 153, 77), "small"); y += 15
+                       px + 12, y, (255, 170, 80), "small"); y += 14
         cam_center = (pL + pR) / 2.0
-        self.text.draw(f"BL: {self.cam.baseline*100:.2f}cm  FOV: {self.cam.fov:.1f}\u00b0",
-                       px + 14, y, Theme.TEXT_DIM, "small"); y += 20
+        self.text.draw(f"BL {self.cam.baseline*100:.2f}cm  FOV {self.cam.fov:.1f}\u00b0",
+                       px + 12, y, Theme.TEXT_DIM, "small"); y += 16
 
-        # Board info
-        self.text.draw("BOARDS", px + 12, y, Theme.INFO, "medium"); y += 20
+        self._draw_separator(px + 10, y, pw - 20); y += 6
+
+        # Boards section
+        self.text.draw("BOARDS", px + 10, y, Theme.SECTION, "small"); y += 18
         for bi, board in enumerate(self.boards):
+            if y + 50 > py + ph - 4:
+                break
             sel = bi == self.selected_board
-            clr = Theme.SELECTED if sel else Theme.TEXT_DIM
-            self.text.draw(f"{'>' if sel else ' '} {board.name}", px + 14, y, clr, "small"); y += 16
+            if sel:
+                self._draw_rect(px + 4, y - 2, pw - 8, 52, Theme.PANEL_ACC, 0.5)
+            clr = Theme.ACCENT if sel else Theme.TEXT
+            self.text.draw(f"{'>' if sel else ' '} {board.name}", px + 12, y, clr, "small"); y += 14
             p = board.position
             e = board.euler_angles
-            self.text.draw(f"  Pos [{p[0]:.3f}, {p[1]:.3f}, {p[2]:.3f}]",
-                           px + 14, y, Theme.TEXT_DIM, "small"); y += 14
-            self.text.draw(f"  Rot [{e[0]:.1f}, {e[1]:.1f}, {e[2]:.1f}]\u00b0",
-                           px + 14, y, Theme.TEXT_DIM, "small"); y += 14
+            self.text.draw(f"  XYZ [{p[0]:.3f}, {p[1]:.3f}, {p[2]:.3f}]",
+                           px + 12, y, Theme.TEXT_DIM, "small"); y += 13
+            self.text.draw(f"  RPY [{e[0]:.1f}, {e[1]:.1f}, {e[2]:.1f}]\u00b0",
+                           px + 12, y, Theme.TEXT_DIM, "small"); y += 13
             dist = float(np.linalg.norm(p - cam_center))
             vis_L, vis_R, total = self._vis_stats[bi]
             dist_clr = Theme.SUCCESS if dist < 3.0 else (Theme.WARNING if dist < 5.0 else Theme.ERROR)
-            self.text.draw(f"  Dist: {dist:.2f}m  Vis: L={vis_L}/{total} R={vis_R}/{total}",
-                           px + 14, y, dist_clr, "small"); y += 18
+            self.text.draw(f"  {dist:.2f}m  L={vis_L}/{total} R={vis_R}/{total}",
+                           px + 12, y, dist_clr, "small"); y += 16
 
         glEnable(GL_DEPTH_TEST)
         glEnable(GL_LIGHTING)
@@ -1114,15 +1142,14 @@ class SimPublisher:
         glDisable(GL_DEPTH_TEST)
         glDisable(GL_LIGHTING)
 
-        pw = 300
-        px = self.win_w - pw - 10
-        py = 56
-        y = py + 12
+        pw = 280
+        px = self.win_w - pw - 8
+        py = 40
+        y = py + 10
 
         ev = self.evaluator
         has_data = bool(ev.errors)
 
-        # Connection status
         if ev.connected:
             conn_clr = Theme.SUCCESS
             conn_txt = f"Connected  (recv: {ev.recv_count})"
@@ -1130,75 +1157,74 @@ class SimPublisher:
             conn_clr = Theme.ERROR
             conn_txt = "Waiting for C++ pipeline..."
 
-        # Calculate panel height
         n_boards = len(ev.errors) if has_data else 0
-        ph = 60 + n_boards * 145
+        ph = 70 + n_boards * 155
         if not has_data:
-            ph = 80
+            ph = 90
 
-        self._draw_rect(px, py, pw, ph, Theme.PANEL, 0.88)
+        self._draw_panel(px, py, pw, ph, alpha=0.93, accent_color=Theme.SUCCESS)
 
-        self.text.draw("EVALUATION", px + 12, y, (255, 120, 200), "medium")
+        self.text.draw("EVALUATION", px + 12, y, Theme.SECTION, "medium")
         y += 22
-        self.text.draw(conn_txt, px + 14, y, conn_clr, "small")
-        y += 20
+        self.text.draw(conn_txt, px + 16, y, conn_clr, "small")
+        y += 22
 
         if has_data:
-            for name, err in ev.errors.items():
+            for i, (name, err) in enumerate(ev.errors.items()):
+                if i > 0:
+                    self._draw_separator(px + 12, y, pw - 24); y += 8
+
                 avg_pos = ev.get_avg_pos_error_mm(name)
                 avg_rot = ev.get_avg_rot_error_deg(name)
                 max_pos = ev.get_max_pos_error_mm(name)
 
-                self.text.draw(name, px + 14, y, Theme.ACCENT, "small")
+                self.text.draw(name, px + 16, y, Theme.ACCENT, "small")
                 y += 18
 
-                # Raw positions for verification
                 ep = err.estimated_pos
                 gp = err.gt_pos
                 self.text.draw(
                     f"Est [{ep[0]:.3f},{ep[1]:.3f},{ep[2]:.3f}]",
-                    px + 20, y, Theme.RECON, "small")
+                    px + 22, y, Theme.RECON, "small")
                 y += 14
                 self.text.draw(
                     f"GT  [{gp[0]:.3f},{gp[1]:.3f},{gp[2]:.3f}]",
-                    px + 20, y, Theme.SUCCESS, "small")
+                    px + 22, y, Theme.SUCCESS, "small")
                 y += 16
 
-                # Position error with color coding
                 pe = err.pos_error_mm
                 pe_clr = Theme.SUCCESS if pe < 5 else (Theme.WARNING if pe < 15 else Theme.ERROR)
-                self.text.draw(f"Pos err: {pe:.1f} mm", px + 20, y, pe_clr, "small")
-                y += 15
+                self._draw_rect(px + 16, y - 1, pw - 32, 15, pe_clr, 0.12)
+                self.text.draw(f"Pos err: {pe:.1f} mm", px + 22, y, pe_clr, "small")
+                y += 16
 
                 dx, dy, dz = err.pos_error_xyz_mm
                 self.text.draw(
                     f"  dX={dx:+.1f} dY={dy:+.1f} dZ={dz:+.1f}",
-                    px + 20, y, Theme.TEXT_DIM, "small")
+                    px + 22, y, Theme.TEXT_DIM, "small")
                 y += 15
 
-                # Rotation error
                 re = err.rot_error_deg
                 re_clr = Theme.SUCCESS if re < 2 else (Theme.WARNING if re < 5 else Theme.ERROR)
-                self.text.draw(f"Rot err: {re:.2f} deg", px + 20, y, re_clr, "small")
-                y += 15
+                self._draw_rect(px + 16, y - 1, pw - 32, 15, re_clr, 0.12)
+                self.text.draw(f"Rot err: {re:.2f} deg", px + 22, y, re_clr, "small")
+                y += 16
 
                 dr, dp, dyw = err.rot_error_euler_deg
                 self.text.draw(
                     f"  dR={dr:+.1f} dP={dp:+.1f} dY={dyw:+.1f}",
-                    px + 20, y, Theme.TEXT_DIM, "small")
+                    px + 22, y, Theme.TEXT_DIM, "small")
                 y += 15
 
-                # Averages
                 self.text.draw(
                     f"Avg: {avg_pos:.1f}mm  Max: {max_pos:.1f}mm",
-                    px + 20, y, Theme.TEXT_DIM, "small")
+                    px + 22, y, Theme.TEXT_DIM, "small")
                 y += 15
 
-                # C++ pipeline RMSE and inliers
                 self.text.draw(
                     f"RMSE: {err.rmse_mm:.1f}mm  Inliers: {err.num_inliers}",
-                    px + 20, y, Theme.TEXT_DIM, "small")
-                y += 18
+                    px + 22, y, Theme.TEXT_DIM, "small")
+                y += 20
 
         glEnable(GL_DEPTH_TEST)
         glEnable(GL_LIGHTING)
@@ -1215,6 +1241,50 @@ class SimPublisher:
         glBegin(GL_QUADS)
         glVertex2f(x, y); glVertex2f(x + w, y)
         glVertex2f(x + w, y + h); glVertex2f(x, y + h)
+        glEnd()
+        glDisable(GL_BLEND)
+
+    @staticmethod
+    def _draw_panel(x, y, w, h, alpha=0.95, accent_color=None, accent_h=3):
+        """Panel with drop shadow, border, and optional top accent bar."""
+        glEnable(GL_BLEND)
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
+        # Shadow
+        glColor4f(0.0, 0.0, 0.0, 0.3)
+        glBegin(GL_QUADS)
+        glVertex2f(x + 3, y + 3); glVertex2f(x + w + 3, y + 3)
+        glVertex2f(x + w + 3, y + h + 3); glVertex2f(x + 3, y + h + 3)
+        glEnd()
+        # Background
+        glColor4f(*[c / 255.0 for c in Theme.PANEL], alpha)
+        glBegin(GL_QUADS)
+        glVertex2f(x, y); glVertex2f(x + w, y)
+        glVertex2f(x + w, y + h); glVertex2f(x, y + h)
+        glEnd()
+        # Top accent bar
+        if accent_color:
+            glColor4f(*[c / 255.0 for c in accent_color], 1.0)
+            glBegin(GL_QUADS)
+            glVertex2f(x, y); glVertex2f(x + w, y)
+            glVertex2f(x + w, y + accent_h); glVertex2f(x, y + accent_h)
+            glEnd()
+        # Border
+        glColor4f(*[c / 255.0 for c in Theme.BORDER], 0.6)
+        glLineWidth(1)
+        glBegin(GL_LINE_LOOP)
+        glVertex2f(x, y); glVertex2f(x + w, y)
+        glVertex2f(x + w, y + h); glVertex2f(x, y + h)
+        glEnd()
+        glDisable(GL_BLEND)
+
+    @staticmethod
+    def _draw_separator(x, y, w):
+        glEnable(GL_BLEND)
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
+        glColor4f(*[c / 255.0 for c in Theme.BORDER], 0.4)
+        glLineWidth(1)
+        glBegin(GL_LINES)
+        glVertex2f(x, y); glVertex2f(x + w, y)
         glEnd()
         glDisable(GL_BLEND)
 
@@ -1256,16 +1326,16 @@ class SimPublisher:
 
                 self._draw_god_view()
 
-                vw, vh = 320, 200
-                margin = 20
+                vw, vh = 300, 188
+                margin = 12
                 self._draw_ir_overlay(
                     self.ir_image_L,
-                    margin, self.win_h - vh - margin, vw, vh, "LEFT CAM",
+                    margin, self.win_h - vh - margin, vw, vh, "LEFT",
                     self._led_px_L,
                 )
                 self._draw_ir_overlay(
                     self.ir_image_R,
-                    self.win_w - vw - margin, self.win_h - vh - margin, vw, vh, "RIGHT CAM",
+                    self.win_w - vw - margin, self.win_h - vh - margin, vw, vh, "RIGHT",
                     self._led_px_R,
                 )
 
