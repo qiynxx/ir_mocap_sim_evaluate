@@ -478,11 +478,15 @@ class SimPublisher:
     # ------------------------------------------------------------------
     # Input handling
     # ------------------------------------------------------------------
-    def _handle_input(self):
-        mods = pygame.key.get_mods()
-        shift = bool(mods & KMOD_SHIFT)
-        ctrl = bool(mods & KMOD_CTRL)
+    @staticmethod
+    def _get_modifiers():
+        """Query Shift/Ctrl via get_pressed() – reliable on Linux+OpenGL."""
+        keys = pygame.key.get_pressed()
+        shift = keys[K_LSHIFT] or keys[K_RSHIFT]
+        ctrl = keys[K_LCTRL] or keys[K_RCTRL]
+        return shift, ctrl
 
+    def _handle_input(self):
         move_speed = 0.008
         rot_speed = 1.5
 
@@ -498,10 +502,12 @@ class SimPublisher:
                 self._init_gl()
 
             # --- Mouse buttons ---
+            # Left-drag: move/rotate board  |  Right-drag: orbit view
             elif ev.type == MOUSEBUTTONDOWN:
+                shift, ctrl = self._get_modifiers()
                 if ev.button == 1:
                     self._drag_left = True
-                elif ev.button == 3:  # right button
+                elif ev.button == 3:
                     self._drag_right = True
                 elif ev.button == 4:  # scroll up
                     if ctrl and len(self.boards) > 0:
@@ -527,22 +533,20 @@ class SimPublisher:
             # --- Mouse motion ---
             elif ev.type == MOUSEMOTION:
                 dx, dy = ev.rel
-                if self._drag_left and not self._drag_right:
+                if self._drag_right and not self._drag_left:
                     self.cam_rot[1] += dx * 0.5
                     self.cam_rot[0] += dy * 0.5
-                elif self._drag_right and len(self.boards) > 0:
+                elif self._drag_left and len(self.boards) > 0:
+                    shift, ctrl = self._get_modifiers()
                     board = self.boards[self.selected_board]
                     if shift:
-                        # Shift + right-drag → rotate Pitch (dy) + Yaw (dx)
-                        board.euler_angles[1] += dy * self._mouse_rot_speed
-                        board.euler_angles[2] += dx * self._mouse_rot_speed
+                        board.euler_angles[1] -= dy * self._mouse_rot_speed
+                        board.euler_angles[2] -= dx * self._mouse_rot_speed
                     elif ctrl:
-                        # Ctrl + right-drag → rotate Roll (dx)
-                        board.euler_angles[0] += dx * self._mouse_rot_speed
+                        board.euler_angles[0] -= dx * self._mouse_rot_speed
                     else:
-                        # Right-drag → translate XY
-                        board.position[0] -= dy * self._mouse_move_speed
-                        board.position[1] -= dx * self._mouse_move_speed
+                        board.position[0] += dy * self._mouse_move_speed
+                        board.position[1] += dx * self._mouse_move_speed
                     board.set_pose_euler(board.position, board.euler_angles)
 
             # --- Key release (for toggle debounce) ---
@@ -588,6 +592,7 @@ class SimPublisher:
                 # Keyboard movement (legacy, still works as fine control)
                 elif len(self.boards) > 0:
                     board = self.boards[self.selected_board]
+                    moved = True
                     if   k == K_w: board.position[0] += move_speed
                     elif k == K_s: board.position[0] -= move_speed
                     elif k == K_a: board.position[1] += move_speed
@@ -601,8 +606,9 @@ class SimPublisher:
                     elif k == K_y: board.euler_angles[2] += rot_speed
                     elif k == K_h: board.euler_angles[2] -= rot_speed
                     else:
-                        return True  # no board pose change
-                    board.set_pose_euler(board.position, board.euler_angles)
+                        moved = False
+                    if moved:
+                        board.set_pose_euler(board.position, board.euler_angles)
         return True
 
     def _apply_preset(self, index):
@@ -1008,11 +1014,11 @@ class SimPublisher:
 
         self.text.draw("MOUSE CONTROLS", px + 12, y, Theme.INFO, "medium"); y += 20
         for key, desc in [
-            ("Right-drag", "Move board XY"),
-            ("Shift+R-drag", "Rotate Pitch/Yaw"),
-            ("Ctrl+R-drag", "Rotate Roll"),
+            ("Left-drag", "Move board XY"),
+            ("Shift+L-drag", "Rotate Pitch/Yaw"),
+            ("Ctrl+L-drag", "Rotate Roll"),
             ("Ctrl+Scroll", "Move board Z"),
-            ("Left-drag", "Orbit view"),
+            ("Right-drag", "Orbit view"),
             ("Scroll", "Zoom"),
         ]:
             self.text.draw(key, px + 14, y, Theme.ACCENT, "small")
@@ -1217,8 +1223,8 @@ class SimPublisher:
     # ------------------------------------------------------------------
     def run(self):
         print("Simulation running.")
-        print("  Right-drag: move board XY | Shift+Right-drag: rotate Pitch/Yaw")
-        print("  Ctrl+Right-drag: rotate Roll | Ctrl+Scroll: move Z")
+        print("  Left-drag: move board XY | Shift+Left-drag: rotate Pitch/Yaw")
+        print("  Ctrl+Left-drag: rotate Roll | Ctrl+Scroll: move Z")
         print("  F1-F9: preset poses | P: trajectory playback | N: noise | V: eval panel")
         print("  WASD/QE: fine move | RFTGYH: fine rotate | Close window to exit.")
 
