@@ -14,9 +14,12 @@ Usage:
     python sim_publisher.py --mesh 0:config/meshes/board.stl
     python sim_publisher.py --mesh path/to/model.stl --points-3d path/to/leds.json
     python sim_publisher.py --port 5552 --fps 30
+    python sim_publisher.py --trajectory config/trajectories/sweep.json
 """
 
 import argparse
+import csv
+import json
 import math
 import os
 import struct
@@ -43,6 +46,243 @@ from sim_scene import (
     euler_to_rotation_matrix, rotation_matrix_to_euler_angles,
     COLOR_BOARD1, COLOR_BOARD2,
 )
+
+
+# ---------------------------------------------------------------------------
+# Preset poses: typical test scenarios
+# ---------------------------------------------------------------------------
+PRESET_POSES = [
+    {
+        "name": "Front Close",
+        "description": "0.4m, facing camera",
+        "position": [0.4, 0.0, 0.0],
+        "euler": [0.0, 0.0, 0.0],
+    },
+    {
+        "name": "Front Mid",
+        "description": "1.0m, facing camera",
+        "position": [1.0, 0.0, 0.0],
+        "euler": [0.0, 0.0, 0.0],
+    },
+    {
+        "name": "Front Far",
+        "description": "2.5m, facing camera",
+        "position": [2.5, 0.0, 0.0],
+        "euler": [0.0, 0.0, 0.0],
+    },
+    {
+        "name": "Left 30\u00b0",
+        "description": "1.0m, offset left, rotated 30\u00b0",
+        "position": [0.9, 0.4, 0.0],
+        "euler": [0.0, 0.0, -30.0],
+    },
+    {
+        "name": "Right 30\u00b0",
+        "description": "1.0m, offset right, rotated -30\u00b0",
+        "position": [0.9, -0.4, 0.0],
+        "euler": [0.0, 0.0, 30.0],
+    },
+    {
+        "name": "Above 45\u00b0",
+        "description": "0.8m, elevated, pitched 45\u00b0",
+        "position": [0.6, 0.0, 0.4],
+        "euler": [0.0, -45.0, 0.0],
+    },
+    {
+        "name": "Oblique",
+        "description": "1.2m, combined offset and rotation",
+        "position": [1.0, 0.3, 0.2],
+        "euler": [15.0, -20.0, 25.0],
+    },
+    {
+        "name": "Extreme Angle",
+        "description": "0.6m, steep yaw 60\u00b0",
+        "position": [0.5, 0.5, 0.0],
+        "euler": [0.0, 0.0, -60.0],
+    },
+    {
+        "name": "Far Tilted",
+        "description": "3.0m, slight tilt",
+        "position": [3.0, 0.0, 0.1],
+        "euler": [10.0, 5.0, -5.0],
+    },
+]
+
+
+# ---------------------------------------------------------------------------
+# Trajectory player
+# ---------------------------------------------------------------------------
+class TrajectoryPlayer:
+    """Plays back a sequence of waypoints with smooth interpolation.
+
+    Trajectory JSON format::
+
+        {
+            "name": "sweep",
+            "loop": true,
+            "dwell_frames": 30,
+            "waypoints": [
+                {"position": [x,y,z], "euler": [r,p,y]},
+                ...
+            ]
+        }
+
+    ``dwell_frames`` is how many simulation frames to hold each waypoint
+    before interpolating to the next (default 30 = ~1 second at 30 FPS).
+    Set ``"interpolate": false`` to snap without smooth transitions.
+    """
+
+    def __init__(self):
+        self.active = False
+        self.waypoints = []
+        self.loop = True
+        self.dwell_frames = 30
+        self.interpolate = True
+        self.name = ""
+
+        self._wp_index = 0
+        self._frame_in_segment = 0
+        self._transition_frames = 15  # frames to interpolate between waypoints
+        self._done = False
+
+        # Error logging
+        self._log_path = None
+        self._log_file = None
+        self._log_writer = None
+
+    def load(self, path):
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        self.waypoints = data.get("waypoints", [])
+        self.loop = data.get("loop", True)
+        self.dwell_frames = data.get("dwell_frames", 30)
+        self.interpolate = data.get("interpolate", True)
+        self.name = data.get("name", os.path.basename(path))
+        self._wp_index = 0
+        self._frame_in_segment = 0
+        self._done = False
+        if not self.waypoints:
+            print(f"[trajectory] WARNING: no waypoints in {path}")
+        else:
+            print(f"[trajectory] loaded '{self.name}': {len(self.waypoints)} waypoints, "
+                  f"loop={self.loop}, dwell={self.dwell_frames}")
+
+    def load_from_presets(self):
+        """Build a trajectory from all built-in presets."""
+        self.waypoints = [
+            {"position": p["position"], "euler": p["euler"]}
+            for p in PRESET_POSES
+        ]
+        self.loop = True
+        self.dwell_frames = 60
+        self.interpolate = True
+        self.name = "All Presets"
+        self._wp_index = 0
+        self._frame_in_segment = 0
+        self._done = False
+        print(f"[trajectory] loaded preset sweep: {len(self.waypoints)} waypoints")
+
+    def toggle(self):
+        if not self.waypoints:
+            self.load_from_presets()
+        self.active = not self.active
+        if self.active:
+            self._done = False
+            print(f"[trajectory] playback STARTED: '{self.name}'")
+        else:
+            print("[trajectory] playback PAUSED")
+
+    def start_logging(self, log_dir):
+        """Start CSV error logging for the current trajectory run."""
+        os.makedirs(log_dir, exist_ok=True)
+        ts = time.strftime("%Y%m%d_%H%M%S")
+        self._log_path = os.path.join(log_dir, f"traj_{self.name}_{ts}.csv")
+        self._log_file = open(self._log_path, "w", newline="", encoding="utf-8")
+        self._log_writer = csv.writer(self._log_file)
+        self._log_writer.writerow([
+            "frame", "waypoint", "board_name",
+            "gt_x", "gt_y", "gt_z", "gt_r", "gt_p", "gt_yaw",
+            "est_x", "est_y", "est_z",
+            "pos_err_mm", "rot_err_deg", "rmse_mm", "inliers",
+        ])
+        print(f"[trajectory] logging errors to {self._log_path}")
+
+    def stop_logging(self):
+        if self._log_file:
+            self._log_file.close()
+            print(f"[trajectory] log saved: {self._log_path}")
+            self._log_file = None
+            self._log_writer = None
+
+    def log_frame(self, frame_id, evaluator, boards):
+        if self._log_writer is None:
+            return
+        for board in boards:
+            err = evaluator.errors.get(board.name)
+            if err is None:
+                continue
+            p = board.position
+            e = board.euler_angles
+            ep = err.estimated_pos
+            self._log_writer.writerow([
+                frame_id, self._wp_index, board.name,
+                f"{p[0]:.6f}", f"{p[1]:.6f}", f"{p[2]:.6f}",
+                f"{e[0]:.2f}", f"{e[1]:.2f}", f"{e[2]:.2f}",
+                f"{ep[0]:.6f}", f"{ep[1]:.6f}", f"{ep[2]:.6f}",
+                f"{err.pos_error_mm:.3f}", f"{err.rot_error_deg:.3f}",
+                f"{err.rmse_mm:.3f}", err.num_inliers,
+            ])
+
+    def step(self, board):
+        """Advance one frame. Returns (position, euler) for the board."""
+        if not self.active or not self.waypoints or self._done:
+            return None
+
+        total_segment = self.dwell_frames + (self._transition_frames if self.interpolate else 0)
+        wp = self.waypoints[self._wp_index]
+        pos_target = np.array(wp["position"], dtype=np.float32)
+        euler_target = np.array(wp["euler"], dtype=np.float64)
+
+        if self.interpolate and self._frame_in_segment < self._transition_frames:
+            prev_idx = (self._wp_index - 1) % len(self.waypoints)
+            if self._wp_index == 0 and not self.loop:
+                pos_result = pos_target
+                euler_result = euler_target
+            else:
+                prev = self.waypoints[prev_idx]
+                t = self._frame_in_segment / max(1, self._transition_frames)
+                t = t * t * (3 - 2 * t)  # smoothstep
+                pos_prev = np.array(prev["position"], dtype=np.float32)
+                euler_prev = np.array(prev["euler"], dtype=np.float64)
+                pos_result = pos_prev + (pos_target - pos_prev) * t
+                euler_result = euler_prev + (euler_target - euler_prev) * t
+        else:
+            pos_result = pos_target
+            euler_result = euler_target
+
+        self._frame_in_segment += 1
+        if self._frame_in_segment >= total_segment:
+            self._frame_in_segment = 0
+            self._wp_index += 1
+            if self._wp_index >= len(self.waypoints):
+                if self.loop:
+                    self._wp_index = 0
+                else:
+                    self._done = True
+                    self.active = False
+                    print("[trajectory] playback FINISHED")
+
+        return pos_result, euler_result
+
+    @property
+    def status_text(self):
+        if not self.waypoints:
+            return "No trajectory"
+        if self._done:
+            return f"Done ({self.name})"
+        if self.active:
+            return f"Playing {self._wp_index+1}/{len(self.waypoints)}"
+        return f"Paused {self._wp_index+1}/{len(self.waypoints)}"
 
 
 # ---------------------------------------------------------------------------
@@ -191,11 +431,26 @@ class SimPublisher:
         # --- God-view orbit camera ---
         self.cam_rot = [30.0, 0.0]
         self.cam_zoom = -3.0
-        self.dragging = False
-        self._toggle_held = set()  # debounce for toggle keys (N, V)
+        self._drag_left = False   # left button: orbit view
+        self._drag_right = False  # right button: move/rotate board
+        self._toggle_held = set()
+
+        # --- Mouse sensitivity for board control ---
+        self._mouse_move_speed = 0.002   # metres per pixel
+        self._mouse_rot_speed = 0.4      # degrees per pixel
 
         # --- ZMQ send status ---
         self.frames_sent = 0
+
+        # --- Preset & trajectory ---
+        self._preset_index = -1
+        self.trajectory = TrajectoryPlayer()
+        if args.trajectory:
+            self.trajectory.load(args.trajectory)
+
+        self._log_dir = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "logs"
+        )
 
         # --- Evaluator (subscribe to C++ pipeline output) ---
         eval_addr = f"tcp://localhost:{args.eval_port}"
@@ -224,6 +479,10 @@ class SimPublisher:
     # Input handling
     # ------------------------------------------------------------------
     def _handle_input(self):
+        mods = pygame.key.get_mods()
+        shift = bool(mods & KMOD_SHIFT)
+        ctrl = bool(mods & KMOD_CTRL)
+
         move_speed = 0.008
         rot_speed = 1.5
 
@@ -238,39 +497,95 @@ class SimPublisher:
                 )
                 self._init_gl()
 
+            # --- Mouse buttons ---
             elif ev.type == MOUSEBUTTONDOWN:
                 if ev.button == 1:
-                    self.dragging = True
-                elif ev.button == 4:
-                    self.cam_zoom += 0.2
-                elif ev.button == 5:
-                    self.cam_zoom -= 0.2
+                    self._drag_left = True
+                elif ev.button == 3:  # right button
+                    self._drag_right = True
+                elif ev.button == 4:  # scroll up
+                    if ctrl and len(self.boards) > 0:
+                        board = self.boards[self.selected_board]
+                        board.position[2] += 0.02
+                        board.set_pose_euler(board.position, board.euler_angles)
+                    else:
+                        self.cam_zoom += 0.2
+                elif ev.button == 5:  # scroll down
+                    if ctrl and len(self.boards) > 0:
+                        board = self.boards[self.selected_board]
+                        board.position[2] -= 0.02
+                        board.set_pose_euler(board.position, board.euler_angles)
+                    else:
+                        self.cam_zoom -= 0.2
 
             elif ev.type == MOUSEBUTTONUP:
                 if ev.button == 1:
-                    self.dragging = False
+                    self._drag_left = False
+                elif ev.button == 3:
+                    self._drag_right = False
 
+            # --- Mouse motion ---
             elif ev.type == MOUSEMOTION:
-                if self.dragging:
-                    dx, dy = ev.rel
+                dx, dy = ev.rel
+                if self._drag_left and not self._drag_right:
                     self.cam_rot[1] += dx * 0.5
                     self.cam_rot[0] += dy * 0.5
+                elif self._drag_right and len(self.boards) > 0:
+                    board = self.boards[self.selected_board]
+                    if shift:
+                        # Shift + right-drag → rotate Pitch (dy) + Yaw (dx)
+                        board.euler_angles[1] += dy * self._mouse_rot_speed
+                        board.euler_angles[2] += dx * self._mouse_rot_speed
+                    elif ctrl:
+                        # Ctrl + right-drag → rotate Roll (dx)
+                        board.euler_angles[0] += dx * self._mouse_rot_speed
+                    else:
+                        # Right-drag → translate XY
+                        board.position[0] -= dy * self._mouse_move_speed
+                        board.position[1] -= dx * self._mouse_move_speed
+                    board.set_pose_euler(board.position, board.euler_angles)
 
+            # --- Key release (for toggle debounce) ---
             elif ev.type == KEYUP:
                 self._toggle_held.discard(ev.key)
 
+            # --- Key press ---
             elif ev.type == KEYDOWN:
                 k = ev.key
+
+                # Toggle keys
                 if k == K_v and k not in self._toggle_held:
                     self._toggle_held.add(k)
                     self.show_eval = not self.show_eval
                 elif k == K_n and k not in self._toggle_held:
                     self._toggle_held.add(k)
                     self.noise_gen.toggle()
+
+                # Board selection
+                elif k == K_TAB:
+                    self.selected_board = (self.selected_board + 1) % max(1, len(self.boards))
                 elif k == K_1:
                     self.selected_board = 0
                 elif k == K_2 and len(self.boards) > 1:
                     self.selected_board = 1
+
+                # Preset poses (F1-F9)
+                elif K_F1 <= k <= K_F9 and k not in self._toggle_held:
+                    self._toggle_held.add(k)
+                    idx = k - K_F1
+                    if idx < len(PRESET_POSES):
+                        self._apply_preset(idx)
+
+                # Trajectory playback
+                elif k == K_p and k not in self._toggle_held:
+                    self._toggle_held.add(k)
+                    self.trajectory.toggle()
+                    if self.trajectory.active:
+                        self.trajectory.start_logging(self._log_dir)
+                    else:
+                        self.trajectory.stop_logging()
+
+                # Keyboard movement (legacy, still works as fine control)
                 elif len(self.boards) > 0:
                     board = self.boards[self.selected_board]
                     if   k == K_w: board.position[0] += move_speed
@@ -285,8 +600,22 @@ class SimPublisher:
                     elif k == K_g: board.euler_angles[1] -= rot_speed
                     elif k == K_y: board.euler_angles[2] += rot_speed
                     elif k == K_h: board.euler_angles[2] -= rot_speed
+                    else:
+                        return True  # no board pose change
                     board.set_pose_euler(board.position, board.euler_angles)
         return True
+
+    def _apply_preset(self, index):
+        """Jump the selected board to a preset pose."""
+        if index < 0 or index >= len(PRESET_POSES):
+            return
+        preset = PRESET_POSES[index]
+        board = self.boards[self.selected_board]
+        board.position = np.array(preset["position"], dtype=np.float32)
+        board.euler_angles = np.array(preset["euler"], dtype=np.float64)
+        board.set_pose_euler(board.position, board.euler_angles)
+        self._preset_index = index
+        print(f"[preset] F{index+1}: {preset['name']} - {preset['description']}")
 
     # ------------------------------------------------------------------
     # Vision + ZMQ publish
@@ -672,29 +1001,61 @@ class SimPublisher:
         px, py = 10, 56
         pw = 280
 
-        # Calculate panel content height dynamically
-        content_lines = 6 + 3 + 3 + len(self.boards) * 5 + 4  # controls + noise + cameras + boards + distance
-        ph = max(340, content_lines * 16 + 40)
+        content_lines = 12 + 3 + 3 + 4 + len(self.boards) * 5 + 4
+        ph = max(440, content_lines * 15 + 40)
         self._draw_rect(px, py, pw, ph, Theme.PANEL, 0.85)
         y = py + 12
 
-        self.text.draw("CONTROLS", px + 12, y, Theme.INFO, "medium"); y += 22
+        self.text.draw("MOUSE CONTROLS", px + 12, y, Theme.INFO, "medium"); y += 20
         for key, desc in [
-            ("1/2", "Select Board"), ("WASD+QE", "Move Board"),
-            ("R/F T/G Y/H", "Rotate (RPY)"), ("Mouse Drag", "Orbit View"),
-            ("Scroll", "Zoom"), ("N", "Toggle Noise"),
-            ("V", "Toggle Eval Panel"),
+            ("Right-drag", "Move board XY"),
+            ("Shift+R-drag", "Rotate Pitch/Yaw"),
+            ("Ctrl+R-drag", "Rotate Roll"),
+            ("Ctrl+Scroll", "Move board Z"),
+            ("Left-drag", "Orbit view"),
+            ("Scroll", "Zoom"),
         ]:
             self.text.draw(key, px + 14, y, Theme.ACCENT, "small")
-            self.text.draw(desc, px + 105, y, Theme.TEXT_DIM, "small")
-            y += 18
+            self.text.draw(desc, px + 115, y, Theme.TEXT_DIM, "small")
+            y += 16
+        y += 4
+
+        self.text.draw("KEYS", px + 12, y, Theme.INFO, "medium"); y += 20
+        for key, desc in [
+            ("Tab/1/2", "Select board"),
+            ("WASD+QE", "Fine move"),
+            ("RFTGYH", "Fine rotate"),
+            ("F1-F9", "Preset poses"),
+            ("P", "Play trajectory"),
+            ("N / V", "Noise / Eval"),
+        ]:
+            self.text.draw(key, px + 14, y, Theme.ACCENT, "small")
+            self.text.draw(desc, px + 115, y, Theme.TEXT_DIM, "small")
+            y += 16
         y += 6
 
+        # Trajectory / preset status
+        self.text.draw("MODE", px + 12, y, (255, 120, 200), "medium"); y += 20
+        traj = self.trajectory
+        if traj.active:
+            traj_clr = Theme.SUCCESS
+        elif traj.waypoints:
+            traj_clr = Theme.WARNING
+        else:
+            traj_clr = Theme.TEXT_DIM
+        self.text.draw(f"Traj: {traj.status_text}", px + 14, y, traj_clr, "small"); y += 16
+        if self._preset_index >= 0:
+            pname = PRESET_POSES[self._preset_index]["name"]
+            self.text.draw(f"Preset: F{self._preset_index+1} {pname}",
+                           px + 14, y, Theme.ACCENT, "small")
+        else:
+            self.text.draw("Preset: --", px + 14, y, Theme.TEXT_DIM, "small")
+        y += 16
+
         # Noise status
-        self.text.draw("NOISE", px + 12, y, Theme.WARNING, "medium"); y += 20
         st = "ON" if self.noise_gen.active else "OFF"
         sc = Theme.SUCCESS if self.noise_gen.active else Theme.ERROR
-        self.text.draw(f"Status: {st}", px + 14, y, sc, "small"); y += 20
+        self.text.draw(f"Noise: {st}", px + 14, y, sc, "small"); y += 18
 
         # Camera positions
         self.text.draw("CAMERAS", px + 12, y, Theme.INFO, "medium"); y += 20
@@ -855,16 +1216,35 @@ class SimPublisher:
     # Main loop
     # ------------------------------------------------------------------
     def run(self):
-        print("Simulation running. Move boards with WASD/QE, rotate with RFTGYH.")
-        print("Press N for noise toggle. Close window to exit.")
+        print("Simulation running.")
+        print("  Right-drag: move board XY | Shift+Right-drag: rotate Pitch/Yaw")
+        print("  Ctrl+Right-drag: rotate Roll | Ctrl+Scroll: move Z")
+        print("  F1-F9: preset poses | P: trajectory playback | N: noise | V: eval panel")
+        print("  WASD/QE: fine move | RFTGYH: fine rotate | Close window to exit.")
 
         try:
             while True:
                 if not self._handle_input():
                     break
 
+                # Trajectory playback drives board pose when active
+                if self.trajectory.active and len(self.boards) > 0:
+                    result = self.trajectory.step(self.boards[self.selected_board])
+                    if result is not None:
+                        pos, euler = result
+                        board = self.boards[self.selected_board]
+                        board.position = np.array(pos, dtype=np.float32)
+                        board.euler_angles = np.array(euler, dtype=np.float64)
+                        board.set_pose_euler(board.position, board.euler_angles)
+
                 self._process_and_publish()
                 self.evaluator.update()
+
+                # Log trajectory errors
+                if self.trajectory.active:
+                    self.trajectory.log_frame(
+                        self.frames_sent, self.evaluator, self.boards
+                    )
 
                 glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
 
@@ -897,6 +1277,7 @@ class SimPublisher:
 
     def _cleanup(self):
         print(f"\nShutting down. Total frames sent: {self.frames_sent}")
+        self.trajectory.stop_logging()
         self.evaluator.stop()
         self.text.clear()
         for dl in self._mesh_display_lists:
@@ -964,6 +1345,11 @@ def main():
         "--no-backface-cull",
         action="store_true",
         help="Disable LED surface back-face test (only ray occlusion)",
+    )
+    parser.add_argument(
+        "--trajectory",
+        default=None,
+        help="Trajectory JSON file for automated pose sweep",
     )
     args = parser.parse_args()
 

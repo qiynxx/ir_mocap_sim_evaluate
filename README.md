@@ -288,26 +288,24 @@ python sim_publisher.py --mesh path/to/model.stl --points-3d path/to/leds_only.j
 ┌─────────────────────────────────────────────────────────────────────────────────┐
 │  MOCAP SIM PUBLISHER   │  ZMQ Frames: 1234  │  Cam: 1280x800 …  │  FPS: 30   │ ← ① 顶栏
 ├──────────────┬──────────────────────────────────────────────┬────────────────── │
-│  CONTROLS    │                                              │ EVALUATION       │
-│  1/2  选板   │                                              │ Connected (42)   │
-│  WASD  移动  │                                              │                  │
-│  QE   升降   │          ③ 3D 上帝视角                       │ IR Array Right   │
-│  RFTGYH 旋转 │             (OpenGL)                         │ Pos err: 2.3 mm  │
-│  N  噪声     │                                              │  dX=+1.1 dY=…    │
-│  V  评估面板 │          · 网格 + 坐标轴                     │ Rot err: 0.85°   │
-│              │          · 双目相机锥体 (L/R)                │  dR=… dP=… dY=…  │
-│  NOISE       │          · LED 板模型 + LED 点               │ Avg: 3.1mm       │
-│  Status: OFF │          · 噪声点 (橙色)                     │ Max: 8.2mm       │
-│              │                                              │ RMSE: 1.5mm      │
-│  CAMERAS     │                                              │ Inliers: 11      │
-│  L [x,y,z]  │                                              │                  │
-│  R [x,y,z]  │                                              │                  │
-│  BL/FOV 信息 │                                              │                  │
-│              │                                              │                  │
-│  BOARDS      │                                              │                  │
-│  > 板名      │                                              │                  │
-│    Pos/Rot   │                                              │                  │
-│    Dist/Vis  │                                              │                  │
+│ MOUSE CONTROLS│                                             │ EVALUATION       │
+│ Right-drag XY │                                             │ Connected (42)   │
+│ Shift+R Pitch │          ③ 3D 上帝视角                      │                  │
+│ Ctrl+R  Roll  │             (OpenGL)                        │ IR Array Right   │
+│ Ctrl+Scrl Z   │                                             │ Pos err: 2.3 mm  │
+│ KEYS          │          · 网格 + 坐标轴                    │  dX=+1.1 dY=…    │
+│ F1-F9 Presets │          · 双目相机锥体 (L/R)               │ Rot err: 0.85°   │
+│ P  Trajectory │          · LED 板模型 + LED 点              │  dR=… dP=… dY=…  │
+│ N/V  Noise/Ev │          · 噪声点 (橙色)                    │ Avg: 3.1mm       │
+│               │                                             │ Max: 8.2mm       │
+│ MODE          │                                             │ RMSE: 1.5mm      │
+│ Traj: Playing │                                             │ Inliers: 11      │
+│ Preset: F1    │                                             │                  │
+│ Noise: OFF    │                                             │                  │
+│ CAMERAS       │                                             │                  │
+│ L/R [x,y,z]  │                                             │                  │
+│ BOARDS        │                                             │                  │
+│ > 板名 Pos/Rot│                                             │                  │
 ├──────────────┼───────────────────────┬──────────────────────┼──────────────────┘
 │ ┌──────────────────────┐             │ ┌──────────────────────┐                 │
 │ │ LEFT CAM             │             │ │ RIGHT CAM            │                 │
@@ -317,7 +315,7 @@ python sim_publisher.py --mesh path/to/model.stl --points-3d path/to/leds_only.j
 └─────────────────────────────────────────────────────────────────────────────────┘
 
 ① 顶栏 ─── ZMQ 发送状态、相机参数、实时帧率
-② 左面板 ── 操控说明、噪声状态、相机位置、板信息
+② 左面板 ── 鼠标/键盘操控说明、模式状态、相机位置、板信息
 ③ 中央 ─── 3D 交互视角（鼠标拖拽旋转、滚轮缩放）
 ④⑤ 底部 ── 双目 IR 灰度图实时预览
 ⑥ 右面板 ── 评估面板（按 V 切换显示/隐藏）
@@ -328,7 +326,7 @@ python sim_publisher.py --mesh path/to/model.stl --points-3d path/to/leds_only.j
 | 区域 | 位置 | 说明 |
 |------|------|------|
 | 顶栏 | 顶部横条 | 显示 ZMQ 已发帧数、相机分辨率/FOV/基线、实时 FPS（绿>25, 黄>15, 红≤15）|
-| 控制面板 | 左侧 | 按键帮助、噪声开关状态（ON=绿/OFF=红）|
+| 控制面板 | 左侧 | 鼠标/键盘操控说明、模式状态（轨迹/预设/噪声）|
 | 相机信息 | 左侧中部 | 左右相机在世界坐标系下的位置 [X,Y,Z]、基线距离、FOV |
 | 板信息 | 左侧下部 | 当前选中板（`>` 标记）的位置/旋转/到相机距离/双目可见 LED 数 |
 | 3D 视角 | 中央 | FLU 世界坐标系下的上帝视角，包含网格、坐标轴（红=X 黄=Y 蓝=Z）、相机锥体、LED 板 |
@@ -368,25 +366,111 @@ python sim_publisher.py --mesh path/to/model.stl --points-3d path/to/leds_only.j
 
 ## 操控说明
 
+### 鼠标操控（主要交互方式）
+
+| 操作 | 功能 |
+|------|------|
+| **右键拖拽** | 平移板卡 XY（前后/左右） |
+| **Shift + 右键拖拽** | 旋转板卡 Pitch（上下）/ Yaw（左右） |
+| **Ctrl + 右键拖拽** | 旋转板卡 Roll（左右） |
+| **Ctrl + 滚轮** | 升降板卡 Z 轴 |
+| 左键拖拽 | 旋转上帝视角 |
+| 滚轮 | 缩放 |
+
+### 键盘操控
+
 | 按键 | 功能 |
 |------|------|
-| 1 / 2 | 选择板 |
-| W / S | 前后移动 (X) |
-| A / D | 左右移动 (Y) |
-| Q / E | 上下移动 (Z) |
-| R / F | Roll 旋转 |
-| T / G | Pitch 旋转 |
-| Y / H | Yaw 旋转 |
+| **F1 - F9** | 一键跳转到预设位姿（9 种典型场景） |
+| **P** | 开始/暂停轨迹回放（自动遍历位姿并记录误差） |
+| Tab / 1 / 2 | 切换选中板 |
 | N | 切换噪声 |
 | V | 切换评估面板 |
-| 鼠标拖拽 | 旋转上帝视角 |
-| 滚轮 | 缩放 |
+| W / S | 精细前后移动 (X) |
+| A / D | 精细左右移动 (Y) |
+| Q / E | 精细上下移动 (Z) |
+| R / F | 精细 Roll 旋转 |
+| T / G | 精细 Pitch 旋转 |
+| Y / H | 精细 Yaw 旋转 |
+
+### 预设位姿（F1-F9）
+
+按 F1-F9 可快速将选中板卡跳转到预定义的位姿，覆盖典型测试场景：
+
+| 快捷键 | 名称 | 说明 |
+|--------|------|------|
+| F1 | Front Close | 0.4m，正对相机 |
+| F2 | Front Mid | 1.0m，正对相机 |
+| F3 | Front Far | 2.5m，正对相机 |
+| F4 | Left 30° | 1.0m，左偏 + Yaw 30° |
+| F5 | Right 30° | 1.0m，右偏 + Yaw -30° |
+| F6 | Above 45° | 0.8m，高处 + Pitch 45° |
+| F7 | Oblique | 1.2m，复合偏移 + 旋转 |
+| F8 | Extreme Angle | 0.6m，大角度 Yaw 60° |
+| F9 | Far Tilted | 3.0m，远距 + 微倾 |
+
+### 轨迹回放与自动化测试
+
+按 `P` 键启动轨迹回放（再按一次暂停）。轨迹会自动遍历一系列预定义位姿，同时将每帧的 GT 和管线估计误差记录到 CSV 文件。
+
+#### 使用方式
+
+```bash
+# 方式 1：按 P 键使用内置预设轨迹（自动遍历 F1-F9 所有预设）
+python sim_publisher.py
+# 启动后按 P 开始回放
+
+# 方式 2：加载自定义轨迹文件
+python sim_publisher.py --trajectory config/trajectories/distance_sweep.json
+# 启动后按 P 开始回放
+```
+
+#### 内置轨迹文件
+
+| 文件 | 说明 |
+|------|------|
+| `config/trajectories/distance_sweep.json` | 距离扫描：0.3m → 3.0m 沿 X 轴 |
+| `config/trajectories/angle_sweep.json` | 角度扫描：Yaw ±60° 往返 |
+| `config/trajectories/full_test.json` | 综合测试：距离 + 角度 + 仰角组合 |
+
+#### 自定义轨迹格式
+
+```json
+{
+    "name": "my_test",
+    "loop": false,
+    "dwell_frames": 60,
+    "interpolate": true,
+    "waypoints": [
+        {"position": [x, y, z], "euler": [roll, pitch, yaw]},
+        ...
+    ]
+}
+```
+
+| 字段 | 说明 |
+|------|------|
+| `dwell_frames` | 每个路径点停留帧数（30 FPS 下 60 帧 = 2 秒） |
+| `loop` | 是否循环播放 |
+| `interpolate` | 是否在路径点间平滑过渡（smoothstep 插值） |
+| `position` | 板卡位置 [X, Y, Z]（米，FLU 坐标） |
+| `euler` | 板卡旋转 [Roll, Pitch, Yaw]（度） |
+
+#### 误差日志
+
+轨迹回放时自动生成 CSV 日志到 `logs/` 目录，格式为 `traj_{name}_{timestamp}.csv`，包含：
+
+```
+frame, waypoint, board_name, gt_x/y/z, gt_r/p/y, est_x/y/z, pos_err_mm, rot_err_deg, rmse_mm, inliers
+```
+
+可用于离线分析管线在不同位姿下的精度分布。
 
 ## 文件说明
 
 | 文件 | 说明 |
 |------|------|
-| `sim_publisher.py` | 主入口：交互 + IR 生成 + ZMQ 发送 + 评估展示 |
+| `sim_publisher.py` | 主入口：交互 + IR 生成 + ZMQ 发送 + 评估展示 + 预设位姿 + 轨迹回放 |
 | `setup_sim.py` | 一键仿真配置：从设计工具导出文件夹自动完成 STL 复制 + 配置生成 + 标定检查 |
 | `sim_evaluator.py` | 实时位姿评估（订阅 C++ 输出，计算 GT 误差） |
 | `sim_camera.py` | 仿真双目相机（从标定 JSON 读参数） |
@@ -398,3 +482,5 @@ python sim_publisher.py --mesh path/to/model.stl --points-3d path/to/leds_only.j
 | `scripts/run_full_pipeline.sh` | 一键启动全链路脚本 |
 | `config/calibration_sim.json` | 仿真标定文件 |
 | `config/mocap_config.json` | LED 板模型配置（可选 `mesh_stl`、`mesh_units`） |
+| `config/trajectories/*.json` | 轨迹回放文件（距离扫描、角度扫描、综合测试） |
+| `logs/` | 轨迹回放自动生成的误差 CSV 日志（自动创建） |

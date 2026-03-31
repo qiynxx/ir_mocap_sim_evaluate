@@ -1,0 +1,26 @@
+{
+    "name": "angle_sweep",
+    "description": "Test various viewing angles at 1.0m distance",
+    "loop": false,
+    "dwell_frames": 60,
+    "interpolate": true,
+    "waypoints": [
+        {"position": [1.0, 0.0, 0.0], "euler": [0.0, 0.0, 0.0]},
+        {"position": [1.0, 0.0, 0.0], "euler": [0.0, 0.0, 15.0]},
+        {"position": [1.0, 0.0, 0.0], "euler": [0.0, 0.0, 30.0]},
+        {"position": [1.0, 0.0, 0.0], "euler": [0.0, 0.0, 45.0]},
+        {"position": [1.0, 0.0, 0.0], "euler": [0.0, 0.0, 60.0]},
+        {"position": [1.0, 0.0, 0.0], "euler": [0.0, 0.0, 45.0]},
+        {"position": [1.0, 0.0, 0.0], "euler": [0.0, 0.0, 30.0]},
+        {"position": [1.0, 0.0, 0.0], "euler": [0.0, 0.0, 15.0]},
+        {"position": [1.0, 0.0, 0.0], "euler": [0.0, 0.0, 0.0]},
+        {"position": [1.0, 0.0, 0.0], "euler": [0.0, 0.0, -15.0]},
+        {"position": [1.0, 0.0, 0.0], "euler": [0.0, 0.0, -30.0]},
+        {"position": [1.0, 0.0, 0.0], "euler": [0.0, 0.0, -45.0]},
+        {"position": [1.0, 0.0, 0.0], "euler": [0.0, 0.0, -60.0]},
+        {"position": [1.0, 0.0, 0.0], "euler": [0.0, 0.0, -45.0]},
+        {"position": [1.0, 0.0, 0.0], "euler": [0.0, 0.0, -30.0]},
+        {"position": [1.0, 0.0, 0.0], "euler": [0.0, 0.0, -15.0]},
+        {"position": [1.0, 0.0, 0.0], "euler": [0.0, 0.0, 0.0]}
+    ]
+}

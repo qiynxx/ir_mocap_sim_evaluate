@@ -1,0 +1,24 @@
+{
+    "name": "full_test",
+    "description": "Comprehensive test: distance + angle + elevation combinations",
+    "loop": false,
+    "dwell_frames": 45,
+    "interpolate": true,
+    "waypoints": [
+        {"position": [0.4, 0.0, 0.0],  "euler": [0.0, 0.0, 0.0]},
+        {"position": [0.6, 0.0, 0.0],  "euler": [0.0, 0.0, 0.0]},
+        {"position": [1.0, 0.0, 0.0],  "euler": [0.0, 0.0, 0.0]},
+        {"position": [1.5, 0.0, 0.0],  "euler": [0.0, 0.0, 0.0]},
+        {"position": [2.0, 0.0, 0.0],  "euler": [0.0, 0.0, 0.0]},
+        {"position": [3.0, 0.0, 0.0],  "euler": [0.0, 0.0, 0.0]},
+        {"position": [1.0, 0.3, 0.0],  "euler": [0.0, 0.0, -20.0]},
+        {"position": [1.0, -0.3, 0.0], "euler": [0.0, 0.0, 20.0]},
+        {"position": [1.0, 0.0, 0.3],  "euler": [0.0, -30.0, 0.0]},
+        {"position": [1.0, 0.0, -0.2], "euler": [0.0, 20.0, 0.0]},
+        {"position": [0.8, 0.3, 0.2],  "euler": [15.0, -20.0, -25.0]},
+        {"position": [1.5, -0.2, 0.1], "euler": [-10.0, 15.0, 30.0]},
+        {"position": [0.5, 0.0, 0.0],  "euler": [0.0, 0.0, -60.0]},
+        {"position": [0.5, 0.0, 0.0],  "euler": [0.0, 0.0, 60.0]},
+        {"position": [1.0, 0.0, 0.0],  "euler": [0.0, 0.0, 0.0]}
+    ]
+}

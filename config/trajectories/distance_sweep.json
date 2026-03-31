@@ -1,0 +1,17 @@
+{
+    "name": "distance_sweep",
+    "description": "Sweep board from 0.3m to 3.0m along X axis, facing camera",
+    "loop": false,
+    "dwell_frames": 60,
+    "interpolate": true,
+    "waypoints": [
+        {"position": [0.3, 0.0, 0.0], "euler": [0.0, 0.0, 0.0]},
+        {"position": [0.5, 0.0, 0.0], "euler": [0.0, 0.0, 0.0]},
+        {"position": [0.8, 0.0, 0.0], "euler": [0.0, 0.0, 0.0]},
+        {"position": [1.0, 0.0, 0.0], "euler": [0.0, 0.0, 0.0]},
+        {"position": [1.5, 0.0, 0.0], "euler": [0.0, 0.0, 0.0]},
+        {"position": [2.0, 0.0, 0.0], "euler": [0.0, 0.0, 0.0]},
+        {"position": [2.5, 0.0, 0.0], "euler": [0.0, 0.0, 0.0]},
+        {"position": [3.0, 0.0, 0.0], "euler": [0.0, 0.0, 0.0]}
+    ]
+}
