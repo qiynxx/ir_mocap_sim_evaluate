@@ -492,6 +492,14 @@ class SimPublisher:
         self._pose_lock = threading.Lock()
         self._running = False
 
+        # Async encode/send: _publish_loop drops raw images here;
+        # _encode_loop picks them up, encodes JPEG, and sends over ZMQ.
+        # Using a queue of depth 1 (drop-oldest) so the encoder never
+        # falls behind — if it's still busy, the new frame replaces the old.
+        self._encode_queue = None   # initialised in run() after imports ready
+        self._encode_lock = threading.Lock()
+        self._encode_pending = None  # (ts_ns, img_L, img_R, overlay_data)
+
     # ------------------------------------------------------------------
     @staticmethod
     def _init_gl():
@@ -661,6 +669,49 @@ class SimPublisher:
         print(f"[preset] F{index+1}: {preset['name']} - {preset['description']}")
         with self._pose_lock:
             self._occlusion_dirty = True
+
+    # ------------------------------------------------------------------
+    # Async encode + ZMQ send (dedicated thread)
+    # ------------------------------------------------------------------
+    def _encode_loop(self):
+        """Picks up raw IR images, encodes to JPEG, and sends over ZMQ.
+
+        Runs in its own thread so JPEG encoding never blocks _publish_loop.
+        If a new frame arrives before encoding finishes, the pending frame
+        is replaced (drop-oldest), keeping latency bounded.
+        """
+        encode_params = [cv2.IMWRITE_JPEG_QUALITY, self.jpeg_quality]
+        while self._running:
+            with self._encode_lock:
+                pending = self._encode_pending
+                self._encode_pending = None
+
+            if pending is None:
+                time.sleep(0.0005)
+                continue
+
+            ts_ns, img_L, img_R, overlay = pending
+
+            ok_l, jpg_l = cv2.imencode(".jpg", img_L, encode_params)
+            ok_r, jpg_r = cv2.imencode(".jpg", img_R, encode_params)
+
+            header = struct.pack("<Q", ts_ns)
+            if ok_l:
+                self.pub_left.send(header + jpg_l.tobytes(), zmq.NOBLOCK)
+            if ok_r:
+                self.pub_right.send(header + jpg_r.tobytes(), zmq.NOBLOCK)
+
+            self.frames_sent += 1
+
+            # Update UI overlays
+            vis_L_ov, occ_L_ov, vis_R_ov, occ_R_ov = overlay
+            with self._ir_lock:
+                self.ir_image_L = img_L
+                self.ir_image_R = img_R
+                self._led_px_L = vis_L_ov
+                self._led_px_R = vis_R_ov
+                self._led_px_L_occ = occ_L_ov
+                self._led_px_R_occ = occ_R_ov
 
     # ------------------------------------------------------------------
     # Async occlusion worker (dedicated thread)
@@ -835,27 +886,15 @@ class SimPublisher:
             img_R = self.ir_gen_R.generate_image(valid_R, noise_on)
 
             ts_ns = int(time.time() * 1e9)
-            header = struct.pack("<Q", ts_ns)
-            encode_params = [cv2.IMWRITE_JPEG_QUALITY, self.jpeg_quality]
+            overlay = (
+                list(overlay_vis_L), list(overlay_occ_L),
+                list(overlay_vis_R), list(overlay_occ_R),
+            )
 
-            ok_l, jpg_l = cv2.imencode(".jpg", img_L, encode_params)
-            ok_r, jpg_r = cv2.imencode(".jpg", img_R, encode_params)
+            # Hand off to encode thread (drop-oldest if encoder is still busy)
+            with self._encode_lock:
+                self._encode_pending = (ts_ns, img_L, img_R, overlay)
 
-            if ok_l:
-                self.pub_left.send(header + jpg_l.tobytes(), zmq.NOBLOCK)
-            if ok_r:
-                self.pub_right.send(header + jpg_r.tobytes(), zmq.NOBLOCK)
-
-            with self._ir_lock:
-                self.ir_image_L = img_L
-                self.ir_image_R = img_R
-                # Overlays use LED-only projections, split into visible/occluded.
-                self._led_px_L = list(overlay_vis_L)
-                self._led_px_R = list(overlay_vis_R)
-                self._led_px_L_occ = list(overlay_occ_L)
-                self._led_px_R_occ = list(overlay_occ_R)
-
-            self.frames_sent += 1
             fps_window_count += 1
             elapsed = time.monotonic() - fps_window_start
             if elapsed >= 0.5:
@@ -1516,6 +1555,8 @@ class SimPublisher:
         print("  WASD/QE: fine move | RFTGYH: fine rotate | Close window to exit.")
 
         self._running = True
+        enc_thread = threading.Thread(target=self._encode_loop, daemon=True)
+        enc_thread.start()
         bg_thread = threading.Thread(target=self._publish_loop, daemon=True)
         bg_thread.start()
         occ_thread = threading.Thread(target=self._occlusion_loop, daemon=True)
@@ -1594,7 +1635,8 @@ class SimPublisher:
             pass
         finally:
             self._running = False
-            self._occ_event.set()  # wake occlusion thread so it can exit
+            self._occ_event.set()
+            enc_thread.join(timeout=1.0)
             bg_thread.join(timeout=1.0)
             occ_thread.join(timeout=1.0)
             self._cleanup()
