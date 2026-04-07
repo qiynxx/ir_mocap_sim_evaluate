@@ -473,12 +473,13 @@ class SimPublisher:
         self.show_eval = True
         print(f"Eval SUB connecting to {eval_addr}")
 
-        if self.occlusion.has_any_mesh() and not args.no_occlusion:
-            print("Occlusion: ON (STL ray cast + back-face cull)")
-        elif args.no_occlusion:
+        # Report occlusion status
+        if args.no_occlusion:
             print("Occlusion: OFF (--no-occlusion)")
-        else:
+        elif not self.occlusion.has_any_mesh():
             print("Occlusion: no mesh (use JSON mesh_stl or --mesh PATH)")
+        else:
+            print("Occlusion: ON (CPU STL ray cast + back-face cull)")
 
         self._ir_lock = threading.Lock()
         self._pose_lock = threading.Lock()
@@ -590,11 +591,14 @@ class SimPublisher:
                     self.noise_gen.toggle()
 
                 # Board selection
-                elif k == K_TAB:
+                elif k == K_TAB and k not in self._toggle_held:
+                    self._toggle_held.add(k)
                     self.selected_board = (self.selected_board + 1) % max(1, len(self.boards))
-                elif k == K_1:
+                elif k == K_1 and k not in self._toggle_held:
+                    self._toggle_held.add(k)
                     self.selected_board = 0
-                elif k == K_2 and len(self.boards) > 1:
+                elif k == K_2 and len(self.boards) > 1 and k not in self._toggle_held:
+                    self._toggle_held.add(k)
                     self.selected_board = 1
 
                 # Preset poses (F1-F9)
@@ -669,6 +673,11 @@ class SimPublisher:
                 time.sleep(sleep_time)
             while time.monotonic() < next_frame:
                 pass
+            # Clamp: if we're more than one interval late, skip ahead to avoid
+            # a burst of catch-up frames that destabilise the cadence.
+            now = time.monotonic()
+            if now - next_frame > interval:
+                next_frame = now
             next_frame += interval
             t0 = time.monotonic()
 
@@ -687,6 +696,9 @@ class SimPublisher:
                 np.vstack(led_pts_world) if led_pts_world else np.empty((0, 3))
             )
 
+            # ------------------------------------------------------------------
+            # LED visibility masks (CPU raycast)
+            # ------------------------------------------------------------------
             if dirty or _vis_L is None or _vis_R is None:
                 _vis_L, _vis_R = self.occlusion.visibility_for_board_leds(
                     self.boards, self.cam.pos_left, self.cam.pos_right
@@ -1503,7 +1515,7 @@ class SimPublisher:
                     self._draw_eval_panel()
 
                 pygame.display.flip()
-                self.clock.tick(self.target_fps)
+                self.clock.tick(self.target_fps + 10)  # allow slight headroom; publish thread controls actual rate
 
         except KeyboardInterrupt:
             pass

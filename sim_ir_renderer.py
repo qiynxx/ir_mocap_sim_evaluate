@@ -46,6 +46,7 @@ class IRImageGenerator:
         self.clutter_objects = []
         self.clutter_update_interval = 1.0  # seconds
         self._last_clutter_update = 0.0
+        self._glow_levels = None  # cached glow ring intensities
 
         # Pre-allocated buffers
         self._buf = np.empty((height, width), dtype=np.float32)
@@ -59,9 +60,31 @@ class IRImageGenerator:
         self._bg_last_update = 0.0
         self.bg_update_interval = 1.0 / 15.0  # seconds (~15 Hz)
 
+        # Salt-pepper noise: pre-generate a pool and cycle through it to avoid
+        # a full-frame random draw every frame.
+        _sp_pool_frames = 8
+        self._sp_pool = self.rng.random(
+            size=(_sp_pool_frames, height, width), dtype=np.float32
+        )
+        self._sp_pool_idx = 0
+
     def update_led_params(self, led_radius, glow_radius):
         self.led_radius = led_radius
         self.glow_radius = glow_radius
+        self._glow_levels = None  # invalidate cache
+
+    def _get_glow_levels(self):
+        """Pre-compute glow ring intensities (cached, recomputed only when radii change)."""
+        if self._glow_levels is not None:
+            return self._glow_levels
+        core_r = self.led_radius
+        glow_r = self.glow_radius
+        levels = []
+        for r in range(glow_r, core_r, -1):
+            alpha = (glow_r - r) / max(1, glow_r - core_r) * 0.5
+            levels.append((r, alpha))
+        self._glow_levels = levels
+        return levels
 
     def _update_clutter(self, noise_active):
         now = time.monotonic()
@@ -150,10 +173,9 @@ class IRImageGenerator:
             glow_radius = self.glow_radius
 
             # IR LED intensity stays constant regardless of distance
-            intensity = int(IR_LED_INTENSITY * (0.85 + np.random.rand() * 0.15))
+            intensity = int(IR_LED_INTENSITY * (0.85 + self.rng.random() * 0.15))
 
-            for r in range(glow_radius, core_radius, -1):
-                alpha = (glow_radius - r) / max(1, glow_radius - core_radius) * 0.5
+            for r, alpha in self._get_glow_levels():
                 glow_intensity = int(intensity * alpha)
                 cv2.circle(img, (int(u), int(v)), r, glow_intensity, 1)
 
@@ -162,9 +184,10 @@ class IRImageGenerator:
             cv2.circle(img, (int(u), int(v)), max(1, core_radius // 2), bright_core, -1)
 
         if noise_active:
-            self._sp_buf[:] = np.random.random(size=(self.height, self.width))
-            img[self._sp_buf < IR_SALT_PEPPER_PROB] = 255
-            img[self._sp_buf > 1 - IR_SALT_PEPPER_PROB] = 0
+            sp = self._sp_pool[self._sp_pool_idx]
+            self._sp_pool_idx = (self._sp_pool_idx + 1) % len(self._sp_pool)
+            img[sp < IR_SALT_PEPPER_PROB] = 255
+            img[sp > 1 - IR_SALT_PEPPER_PROB] = 0
 
         img = np.clip(img, 0, 255).astype(np.uint8)
         img = cv2.GaussianBlur(img, (IR_GAUSSIAN_BLUR_SIZE, IR_GAUSSIAN_BLUR_SIZE), 0)
