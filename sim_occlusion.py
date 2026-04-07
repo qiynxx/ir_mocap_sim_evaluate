@@ -108,6 +108,22 @@ class OcclusionEngine:
             mesh.vertices = (R_inv @ mesh.vertices.T).T
             print(f"[occlusion] mesh rotated by {axis_rot}")
 
+        # Optional mesh simplification for very dense meshes to keep
+        # per-frame ray casting affordable in the default "balanced"
+        # mode. This runs once at load time and leaves topology intact
+        # enough for occlusion testing.
+        faces_before = len(mesh.faces)
+        if faces_before > 50000:
+            target_faces = 20000
+            try:
+                mesh = mesh.simplify_quadratic_decimation(target_faces)
+                print(
+                    f"[occlusion] simplified mesh from {faces_before} "
+                    f"to {len(mesh.faces)} faces"
+                )
+            except Exception as exc:
+                print(f"[occlusion] mesh simplification failed: {exc}")
+
         # --- Scale to metres ---
         units = getattr(board, "mesh_units", "mm")
         scale = {"mm": 0.001, "m": 1.0, "cm": 0.01}.get(units, 0.001)
@@ -159,48 +175,113 @@ class OcclusionEngine:
         """
         Compute per-LED visibility masks for left and right cameras.
 
-        Rays are transformed into the mesh's local frame so the cached BVH
-        is reused every frame. LED surface normals are pre-computed once.
+        Rays are transformed into each board's local frame so the cached BVH
+        is reused every frame. LED surface normals are pre-computed once for
+        self-occlusion. When multiple boards are present, meshes from *all*
+        boards participate in occlusion so boards can mutually occlude each
+        other's LEDs.
 
         Returns
         -------
         vis_L, vis_R : np.ndarray[bool]
             Concatenated across all boards.
         """
+        if not boards:
+            return (
+                np.empty(0, dtype=bool),
+                np.empty(0, dtype=bool),
+            )
+
+        # If occlusion is globally disabled or there is no mesh at all,
+        # treat everything as visible.
+        if (not self._enabled) or (not self.has_any_mesh()):
+            total = sum(len(b.get_world_points()) for b in boards)
+            if total == 0:
+                return (
+                    np.empty(0, dtype=bool),
+                    np.empty(0, dtype=bool),
+                )
+            vis = np.ones(total, dtype=bool)
+            return vis.copy(), vis.copy()
+
         self._precompute_led_normals(boards)
 
-        all_vis_L = []
-        all_vis_R = []
-
+        # Flatten LED world coordinates and remember which board each LED
+        # belongs to. This ordering must match the caller's expectation.
+        led_world = []
+        led_board_index = []
+        board_point_counts = []
         for bi, board in enumerate(boards):
             pts_w = board.get_world_points()
             n = len(pts_w)
-            bmesh = self._meshes[bi] if bi < len(self._meshes) else None
+            board_point_counts.append(n)
+            if n == 0:
+                continue
+            led_world.extend(pts_w)
+            led_board_index.extend([bi] * n)
 
-            if (not self._enabled) or bmesh is None:
-                all_vis_L.append(np.ones(n, dtype=bool))
-                all_vis_R.append(np.ones(n, dtype=bool))
+        if not led_world:
+            return (
+                np.empty(0, dtype=bool),
+                np.empty(0, dtype=bool),
+            )
+
+        led_world = np.asarray(led_world, dtype=np.float64)
+        led_board_index = np.asarray(led_board_index, dtype=int)
+        n_total = led_world.shape[0]
+
+        vis_L = np.ones(n_total, dtype=bool)
+        vis_R = np.ones(n_total, dtype=bool)
+
+        # Precompute per-board transforms (world -> local).
+        R_list = []
+        R_inv_list = []
+        pos_list = []
+        for board in boards:
+            R = board.rotation.astype(np.float64)
+            R_list.append(R)
+            R_inv_list.append(R.T)
+            pos_list.append(board.position.astype(np.float64))
+
+        # ------------------------------------------------------------------
+        # 1) Self-occlusion for each board (own mesh + own LED normals)
+        # ------------------------------------------------------------------
+        offset = 0
+        for bi, (board, n) in enumerate(zip(boards, board_point_counts)):
+            if n == 0:
+                continue
+            bmesh = self._meshes[bi] if bi < len(self._meshes) else None
+            if bmesh is None:
+                offset += n
                 continue
 
-            R = board.rotation.astype(np.float64)
-            R_inv = R.T
-            pos = board.position.astype(np.float64)
-
-            cam_L_local = R_inv @ (np.asarray(cam_pos_left, dtype=np.float64) - pos)
-            cam_R_local = R_inv @ (np.asarray(cam_pos_right, dtype=np.float64) - pos)
+            cam_L_local = R_inv_list[bi] @ (
+                np.asarray(cam_pos_left, dtype=np.float64) - pos_list[bi]
+            )
+            cam_R_local = R_inv_list[bi] @ (
+                np.asarray(cam_pos_right, dtype=np.float64) - pos_list[bi]
+            )
             leds_local = np.asarray(board.model_points, dtype=np.float64)
 
-            vl = self._check_visibility_local(
-                leds_local, cam_L_local, bmesh)
-            vr = self._check_visibility_local(
-                leds_local, cam_R_local, bmesh)
-            all_vis_L.append(vl)
-            all_vis_R.append(vr)
+            vl = self._check_visibility_local(leds_local, cam_L_local, bmesh)
+            vr = self._check_visibility_local(leds_local, cam_R_local, bmesh)
 
-        return (
-            np.concatenate(all_vis_L) if all_vis_L else np.empty(0, dtype=bool),
-            np.concatenate(all_vis_R) if all_vis_R else np.empty(0, dtype=bool),
+            vis_L[offset:offset + n] &= vl
+            vis_R[offset:offset + n] &= vr
+            offset += n
+
+        # ------------------------------------------------------------------
+        # 2) Cross-occlusion: other boards' meshes blocking LEDs
+        #    (no back-face culling, pure ray-block test).
+        # ------------------------------------------------------------------
+        self._apply_cross_occlusion(
+            boards, cam_pos_left, led_world, led_board_index, vis_L
         )
+        self._apply_cross_occlusion(
+            boards, cam_pos_right, led_world, led_board_index, vis_R
+        )
+
+        return vis_L, vis_R
 
     def _check_visibility_local(self, led_pts_local, cam_local, bmesh):
         """
@@ -249,3 +330,70 @@ class OcclusionEngine:
                     vis[i] = False
 
         return vis
+
+    def _apply_cross_occlusion(
+        self,
+        boards,
+        cam_pos_world,
+        led_world,
+        led_board_index,
+        vis_mask,
+    ):
+        """
+        Apply inter-board occlusion: any board's mesh may block LEDs that
+        belong to *other* boards. Operates in-place on ``vis_mask``.
+        """
+        if led_world.size == 0:
+            return
+
+        cam_pos_world = np.asarray(cam_pos_world, dtype=np.float64)
+        n_led = led_world.shape[0]
+
+        for bj, bmesh in enumerate(self._meshes):
+            if bmesh is None:
+                continue
+
+            board = boards[bj]
+            R = board.rotation.astype(np.float64)
+            R_inv = R.T
+            pos = board.position.astype(np.float64)
+
+            # Transform camera + all LEDs into this board's local frame
+            cam_local = R_inv @ (cam_pos_world - pos)
+            leds_local = (R_inv @ (led_world - pos).T).T
+
+            origins = np.tile(cam_local, (n_led, 1))
+            dirs = leds_local - cam_local
+            dists = np.linalg.norm(dirs, axis=1)
+            safe_dists = np.clip(dists, 1e-12, None)
+            dirs_norm = dirs / safe_dists[:, None]
+
+            mesh = bmesh.mesh
+            try:
+                locs, ray_idx, _ = mesh.ray.intersects_location(
+                    ray_origins=origins,
+                    ray_directions=dirs_norm,
+                    multiple_hits=True,
+                )
+            except Exception:
+                continue
+
+            if len(locs) == 0:
+                continue
+
+            hit_dists = np.linalg.norm(locs - origins[ray_idx], axis=1)
+
+            # For each LED index that has at least one hit, decide whether
+            # this mesh blocks the LED (and LED is not on this board).
+            unique_rays = np.unique(ray_idx)
+            for idx in unique_rays:
+                if not vis_mask[idx]:
+                    continue
+                # Skip LEDs that belong to this board: self-occlusion has
+                # already been accounted for in _check_visibility_local.
+                if led_board_index[idx] == bj:
+                    continue
+
+                nearest = hit_dists[ray_idx == idx].min()
+                if nearest < dists[idx] - self._eps:
+                    vis_mask[idx] = False

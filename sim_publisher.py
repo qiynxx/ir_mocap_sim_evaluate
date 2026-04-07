@@ -24,6 +24,7 @@ import math
 import os
 import struct
 import sys
+import threading
 import time
 
 import cv2
@@ -399,6 +400,7 @@ class SimPublisher:
         self._vis_stats = [(0, 0, 0) for _ in self.boards]  # (vis_L, vis_R, total)
         self._last_vis_L = None
         self._last_vis_R = None
+        self._occlusion_dirty = True
 
         # Cache mesh geometry for OpenGL rendering (scaled to metres).
         # Display lists are compiled lazily after the GL context is ready.
@@ -417,8 +419,12 @@ class SimPublisher:
         self.ir_gen_R = IRImageGenerator(self.cam.width, self.cam.height)
         self.ir_image_L = None
         self.ir_image_R = None
-        self._led_px_L = []  # [(u,v,d), ...] for left camera overlay
-        self._led_px_R = []  # [(u,v,d), ...] for right camera overlay
+        # Per-camera LED projections for UI overlays (LEDs only, no noise):
+        # visible = not occluded; occluded = geometrically blocked in that eye.
+        self._led_px_L = []       # visible LEDs in left IR preview
+        self._led_px_R = []       # visible LEDs in right IR preview
+        self._led_px_L_occ = []   # occluded LEDs in left IR preview
+        self._led_px_R_occ = []   # occluded LEDs in right IR preview
 
         # --- ZMQ publish ---
         self.zmq_ctx = zmq.Context()
@@ -446,6 +452,9 @@ class SimPublisher:
 
         # --- ZMQ send status ---
         self.frames_sent = 0
+        self._publish_fps = 0.0          # actual measured publish FPS
+        self._publish_fps_ts = 0.0       # timestamp of last FPS measurement
+        self._publish_fps_count = 0      # frame counter for FPS window
 
         # --- Preset & trajectory ---
         self._preset_index = -1
@@ -470,6 +479,10 @@ class SimPublisher:
             print("Occlusion: OFF (--no-occlusion)")
         else:
             print("Occlusion: no mesh (use JSON mesh_stl or --mesh PATH)")
+
+        self._ir_lock = threading.Lock()
+        self._pose_lock = threading.Lock()
+        self._running = False
 
     # ------------------------------------------------------------------
     @staticmethod
@@ -519,6 +532,8 @@ class SimPublisher:
                         board = self.boards[self.selected_board]
                         board.position[2] += 0.02
                         board.set_pose_euler(board.position, board.euler_angles)
+                        with self._pose_lock:
+                            self._occlusion_dirty = True
                     else:
                         self.cam_zoom += 0.2
                 elif ev.button == 5:  # scroll down
@@ -526,6 +541,8 @@ class SimPublisher:
                         board = self.boards[self.selected_board]
                         board.position[2] -= 0.02
                         board.set_pose_euler(board.position, board.euler_angles)
+                        with self._pose_lock:
+                            self._occlusion_dirty = True
                     else:
                         self.cam_zoom -= 0.2
 
@@ -553,6 +570,8 @@ class SimPublisher:
                         board.position[0] += dy * self._mouse_move_speed
                         board.position[1] += dx * self._mouse_move_speed
                     board.set_pose_euler(board.position, board.euler_angles)
+                    with self._pose_lock:
+                        self._occlusion_dirty = True
 
             # --- Key release (for toggle debounce) ---
             elif ev.type == KEYUP:
@@ -614,6 +633,8 @@ class SimPublisher:
                         moved = False
                     if moved:
                         board.set_pose_euler(board.position, board.euler_angles)
+                        with self._pose_lock:
+                            self._occlusion_dirty = True
         return True
 
     def _apply_preset(self, index):
@@ -627,81 +648,139 @@ class SimPublisher:
         board.set_pose_euler(board.position, board.euler_angles)
         self._preset_index = index
         print(f"[preset] F{index+1}: {preset['name']} - {preset['description']}")
+        with self._pose_lock:
+            self._occlusion_dirty = True
 
     # ------------------------------------------------------------------
-    # Vision + ZMQ publish
+    # Vision + ZMQ publish (background thread)
     # ------------------------------------------------------------------
-    def _process_and_publish(self):
-        self.noise_gen.update()
-        noise_pts = self.noise_gen.get_noise_world_points()
+    def _publish_loop(self):
+        interval = 1.0 / max(1, self.target_fps)
+        _vis_L = _vis_R = None
+        next_frame = time.monotonic()
+        fps_window_start = time.monotonic()
+        fps_window_count = 0
+        while self._running:
+            now = time.monotonic()
+            # Sleep most of the remaining time, then busy-wait the last 1ms
+            # to compensate for OS scheduler jitter at 60 Hz.
+            sleep_time = next_frame - now - 0.001
+            if sleep_time > 0:
+                time.sleep(sleep_time)
+            while time.monotonic() < next_frame:
+                pass
+            next_frame += interval
+            t0 = time.monotonic()
 
-        all_pts = []
-        for board in self.boards:
-            all_pts.append(board.get_world_points())
-        if len(all_pts):
-            all_world = np.vstack(all_pts)
-        else:
-            all_world = np.empty((0, 3))
-        n_board_leds = len(all_world)
+            with self._pose_lock:
+                dirty = self._occlusion_dirty
+                self._occlusion_dirty = False
 
-        vis_L, vis_R = self.occlusion.visibility_for_board_leds(
-            self.boards, self.cam.pos_left, self.cam.pos_right
-        )
-        self._last_vis_L = vis_L
-        self._last_vis_R = vis_R
-        o = 0
-        for bi, board in enumerate(self.boards):
-            n = len(board.get_world_points())
-            self._vis_stats[bi] = (
-                int(vis_L[o : o + n].sum()),
-                int(vis_R[o : o + n].sum()),
-                n,
+            self.noise_gen.update()
+            noise_pts = self.noise_gen.get_noise_world_points()
+
+            # World-space LED positions (concatenated across all boards)
+            led_pts_world = []
+            for board in self.boards:
+                led_pts_world.append(board.get_world_points())
+            led_pts_world = (
+                np.vstack(led_pts_world) if led_pts_world else np.empty((0, 3))
             )
-            o += n
 
-        if len(noise_pts):
-            all_world = np.vstack((all_world, noise_pts)) if len(all_world) else noise_pts
+            if dirty or _vis_L is None or _vis_R is None:
+                _vis_L, _vis_R = self.occlusion.visibility_for_board_leds(
+                    self.boards, self.cam.pos_left, self.cam.pos_right
+                )
+            vis_L, vis_R = _vis_L, _vis_R
 
-        noise_n = len(noise_pts)
-        vis_L_ext = (
-            np.concatenate([vis_L, np.ones(noise_n, dtype=bool)])
-            if noise_n
-            else vis_L
-        )
-        vis_R_ext = (
-            np.concatenate([vis_R, np.ones(noise_n, dtype=bool)])
-            if noise_n
-            else vis_R
-        )
+            # Per-board visibility statistics (for left-side panel)
+            o = 0
+            for bi, board in enumerate(self.boards):
+                n = len(board.get_world_points())
+                self._vis_stats[bi] = (
+                    int(vis_L[o:o + n].sum()),
+                    int(vis_R[o:o + n].sum()),
+                    n,
+                )
+                o += n
 
-        led_L = self.cam.project_with_distance(all_world, is_left=True)
-        led_R = self.cam.project_with_distance(all_world, is_left=False)
+            # Cache the latest vis masks for the 3D god-view LED colouring
+            self._last_vis_L = vis_L
+            self._last_vis_R = vis_R
 
-        led_L = [p if (p is not None and v) else None for p, v in zip(led_L, vis_L_ext)]
-        led_R = [p if (p is not None and v) else None for p, v in zip(led_R, vis_R_ext)]
+            # Build combined point cloud for IR generation (LEDs + optional noise)
+            all_world = led_pts_world
+            if len(noise_pts):
+                all_world = np.vstack((all_world, noise_pts)) if len(all_world) else noise_pts
 
-        valid_L = [p for p in led_L if p is not None]
-        valid_R = [p for p in led_R if p is not None]
-        self._led_px_L = list(valid_L)
-        self._led_px_R = list(valid_R)
+            noise_n = len(noise_pts)
+            vis_L_ext = np.concatenate([vis_L, np.ones(noise_n, dtype=bool)]) if noise_n else vis_L
+            vis_R_ext = np.concatenate([vis_R, np.ones(noise_n, dtype=bool)]) if noise_n else vis_R
 
-        noise_on = self.noise_gen.active
-        self.ir_image_L = self.ir_gen_L.generate_image(valid_L, noise_on)
-        self.ir_image_R = self.ir_gen_R.generate_image(valid_R, noise_on)
+            led_L_all = self.cam.project_with_distance(all_world, is_left=True)
+            led_R_all = self.cam.project_with_distance(all_world, is_left=False)
 
-        ts_ns = int(time.time() * 1e9)
-        header = struct.pack("<Q", ts_ns)
-        encode_params = [cv2.IMWRITE_JPEG_QUALITY, self.jpeg_quality]
+            led_L = [p if (p is not None and v) else None for p, v in zip(led_L_all, vis_L_ext)]
+            led_R = [p if (p is not None and v) else None for p, v in zip(led_R_all, vis_R_ext)]
 
-        ok_l, jpg_l = cv2.imencode(".jpg", self.ir_image_L, encode_params)
-        ok_r, jpg_r = cv2.imencode(".jpg", self.ir_image_R, encode_params)
+            valid_L = [p for p in led_L if p is not None]
+            valid_R = [p for p in led_R if p is not None]
 
-        if ok_l:
-            self.pub_left.send(header + jpg_l.tobytes(), zmq.NOBLOCK)
-        if ok_r:
-            self.pub_right.send(header + jpg_r.tobytes(), zmq.NOBLOCK)
+            # ------------------------------------------------------------------
+            # Overlay data for UI: split LEDs into visible / occluded per eye.
+            # Only LEDs (no noise) contribute to the overlays.
+            # ------------------------------------------------------------------
+            n_led = len(vis_L)
+            overlay_vis_L = []
+            overlay_occ_L = []
+            overlay_vis_R = []
+            overlay_occ_R = []
+            for idx in range(n_led):
+                pL = led_L_all[idx]
+                if pL is not None:
+                    if vis_L[idx]:
+                        overlay_vis_L.append(pL)
+                    else:
+                        overlay_occ_L.append(pL)
+                pR = led_R_all[idx]
+                if pR is not None:
+                    if vis_R[idx]:
+                        overlay_vis_R.append(pR)
+                    else:
+                        overlay_occ_R.append(pR)
 
-        self.frames_sent += 1
+            noise_on = self.noise_gen.active
+            img_L = self.ir_gen_L.generate_image(valid_L, noise_on)
+            img_R = self.ir_gen_R.generate_image(valid_R, noise_on)
+
+            ts_ns = int(time.time() * 1e9)
+            header = struct.pack("<Q", ts_ns)
+            encode_params = [cv2.IMWRITE_JPEG_QUALITY, self.jpeg_quality]
+
+            ok_l, jpg_l = cv2.imencode(".jpg", img_L, encode_params)
+            ok_r, jpg_r = cv2.imencode(".jpg", img_R, encode_params)
+
+            if ok_l:
+                self.pub_left.send(header + jpg_l.tobytes(), zmq.NOBLOCK)
+            if ok_r:
+                self.pub_right.send(header + jpg_r.tobytes(), zmq.NOBLOCK)
+
+            with self._ir_lock:
+                self.ir_image_L = img_L
+                self.ir_image_R = img_R
+                # Overlays use LED-only projections, split into visible/occluded.
+                self._led_px_L = list(overlay_vis_L)
+                self._led_px_R = list(overlay_vis_R)
+                self._led_px_L_occ = list(overlay_occ_L)
+                self._led_px_R_occ = list(overlay_occ_R)
+
+            self.frames_sent += 1
+            fps_window_count += 1
+            elapsed = time.monotonic() - fps_window_start
+            if elapsed >= 0.5:
+                self._publish_fps = fps_window_count / elapsed
+                fps_window_start = time.monotonic()
+                fps_window_count = 0
 
     # ------------------------------------------------------------------
     # Drawing
@@ -740,29 +819,36 @@ class SimPublisher:
             glVertex3f(i, -2, -0.5); glVertex3f(i, 2, -0.5)
         glEnd()
 
-        # Axes
-        glLineWidth(2.5)
+        # Axes (world frame, always bright and unaffected by lighting)
+        glDisable(GL_LIGHTING)
+        glLineWidth(3.0)
         glBegin(GL_LINES)
-        glColor4f(0.95, 0.25, 0.25, 0.9)
-        glVertex3f(0, 0, 0); glVertex3f(0.5, 0, 0)
-        glColor4f(0.2, 0.85, 0.55, 0.9)
-        glVertex3f(0, 0, 0); glVertex3f(0, 0.5, 0)
-        glColor4f(0.3, 0.55, 1.0, 0.9)
-        glVertex3f(0, 0, 0); glVertex3f(0, 0, 0.5)
+        # X axis: red
+        glColor4f(1.0, 0.2, 0.2, 1.0)
+        glVertex3f(0, 0, 0); glVertex3f(0.7, 0, 0)
+        # Y axis: green / cyan
+        glColor4f(0.2, 1.0, 0.5, 1.0)
+        glVertex3f(0, 0, 0); glVertex3f(0, 0.7, 0)
+        # Z axis: blue
+        glColor4f(0.3, 0.6, 1.0, 1.0)
+        glVertex3f(0, 0, 0); glVertex3f(0, 0, 0.7)
         glEnd()
-        glLineWidth(1)
+        glLineWidth(1.0)
+        glEnable(GL_LIGHTING)
         glDisable(GL_BLEND)
 
         # Cameras (small frustums with L/R labels)
         for pos, label, clr in [
-            (self.cam.pos_left,  "L", (0.3, 0.7, 1.0)),
-            (self.cam.pos_right, "R", (1.0, 0.65, 0.3)),
+            (self.cam.pos_left,  "L", (0.2, 0.8, 1.0)),   # left: bright blue-cyan
+            (self.cam.pos_right, "R", (1.0, 0.7, 0.3)),   # right: bright orange
         ]:
+            glDisable(GL_LIGHTING)
             glColor3f(*clr)
             glPushMatrix()
             glTranslatef(*pos)
             self._draw_camera_body()
             glPopMatrix()
+            glEnable(GL_LIGHTING)
 
         # Boards (mesh or wireframe fallback)
         for bi, board in enumerate(self.boards):
@@ -876,7 +962,8 @@ class SimPublisher:
 
     @staticmethod
     def _draw_camera_body():
-        s = 0.015
+        s = 0.03
+        glLineWidth(2.0)
         glBegin(GL_LINES)
         glVertex3f(0, 0, 0); glVertex3f(s, -s, -s)
         glVertex3f(0, 0, 0); glVertex3f(s,  s, -s)
@@ -887,6 +974,7 @@ class SimPublisher:
         glVertex3f(s,  s,  s); glVertex3f(s, -s,  s)
         glVertex3f(s, -s,  s); glVertex3f(s, -s, -s)
         glEnd()
+        glLineWidth(1.0)
 
     @staticmethod
     def _draw_connected_shape(points):
@@ -902,8 +990,22 @@ class SimPublisher:
         glEnd()
 
     # ------------------------------------------------------------------
-    def _draw_ir_overlay(self, ir_img, x, y, w, h, label, led_positions=None):
-        """Draw a small IR image preview with blue circle markers on LEDs."""
+    def _draw_ir_overlay(
+        self,
+        ir_img,
+        x,
+        y,
+        w,
+        h,
+        label,
+        led_visible=None,
+        led_occluded=None,
+    ):
+        """Draw a small IR image preview with LED markers.
+
+        ``led_visible`` and ``led_occluded`` are lists of (u, v, d) tuples in
+        full-resolution pixel coordinates (before downscaling to the preview).
+        """
         glMatrixMode(GL_PROJECTION)
         glPushMatrix()
         glLoadIdentity()
@@ -958,24 +1060,46 @@ class SimPublisher:
             glDisable(GL_TEXTURE_2D)
             glDeleteTextures([tex])
 
-        # LED circle markers
-        if led_positions:
+        # LED circle markers (visible vs occluded)
+        if led_visible or led_occluded:
             sx = w / self.cam.width
             sy = h / self.cam.height
-            glColor4f(0.35, 0.75, 1.0, 0.9)
-            glLineWidth(1.5)
             radius = 5
             n_seg = 20
-            for (u, v, _d) in led_positions:
-                cx = x + u * sx
-                cy = y + v * sy
-                glBegin(GL_LINE_LOOP)
-                for k in range(n_seg):
-                    angle = 2.0 * math.pi * k / n_seg
-                    glVertex2f(cx + radius * math.cos(angle),
-                               cy + radius * math.sin(angle))
-                glEnd()
-            glLineWidth(1)
+            # Visible LEDs: bright markers
+            if led_visible:
+                glColor4f(0.35, 0.75, 1.0, 0.9)
+                glLineWidth(1.5)
+                for (u, v, _d) in led_visible:
+                    cx = x + u * sx
+                    cy = y + v * sy
+                    glBegin(GL_LINE_LOOP)
+                    for k in range(n_seg):
+                        angle = 2.0 * math.pi * k / n_seg
+                        glVertex2f(
+                            cx + radius * math.cos(angle),
+                            cy + radius * math.sin(angle),
+                        )
+                    glEnd()
+                glLineWidth(1)
+
+            # Occluded LEDs: dimmer, smaller markers
+            if led_occluded:
+                glColor4f(0.35, 0.75, 1.0, 0.35)
+                glLineWidth(1.0)
+                occ_radius = max(2, radius - 2)
+                for (u, v, _d) in led_occluded:
+                    cx = x + u * sx
+                    cy = y + v * sy
+                    glBegin(GL_LINE_LOOP)
+                    for k in range(n_seg):
+                        angle = 2.0 * math.pi * k / n_seg
+                        glVertex2f(
+                            cx + occ_radius * math.cos(angle),
+                            cy + occ_radius * math.sin(angle),
+                        )
+                    glEnd()
+                glLineWidth(1)
 
         # Border frame (double line effect)
         glColor4f(*[c / 255.0 for c in Theme.IR_BORDER], 0.5)
@@ -1022,7 +1146,7 @@ class SimPublisher:
         glDisable(GL_DEPTH_TEST)
         glDisable(GL_LIGHTING)
 
-        fps = self.clock.get_fps()
+        fps = self._publish_fps
 
         # ---- Top bar ----
         bar_h = 32
@@ -1047,8 +1171,16 @@ class SimPublisher:
             f"BL {self.cam.baseline * 100:.1f}cm",
             340, 10, Theme.TEXT_DIM, "small"
         )
-        fps_color = Theme.SUCCESS if fps > 25 else (Theme.WARNING if fps > 15 else Theme.ERROR)
-        self.text.draw(f"{fps:.0f} FPS", self.win_w - 70, 8, fps_color, "normal")
+
+        fps_target = max(1, int(self.target_fps))
+        if fps >= 0.9 * fps_target:
+            fps_color = Theme.SUCCESS
+        elif fps >= 0.5 * fps_target:
+            fps_color = Theme.WARNING
+        else:
+            fps_color = Theme.ERROR
+        self.text.draw(f"{fps:.0f}/{fps_target} FPS",
+                       self.win_w - 110, 8, fps_color, "normal")
 
         # ---- Left panel (compact: status only, no help text) ----
         px, py = 8, 40
@@ -1057,7 +1189,7 @@ class SimPublisher:
         y_cursor = py + 10
         section_h = (
             18 + 14 * 3 + 6    # MODE
-            + 18 + 14 * 3 + 6  # CAMERAS
+            + 18 + 14 * 5 + 10  # CAMERAS (L/R/BL + axes + colors)
             + 18 + len(self.boards) * 56 + 4  # BOARDS
         )
         ph = section_h + 16
@@ -1095,6 +1227,10 @@ class SimPublisher:
                        px + 12, y, (255, 170, 80), "small"); y += 14
         cam_center = (pL + pR) / 2.0
         self.text.draw(f"BL {self.cam.baseline*100:.2f}cm  FOV {self.cam.fov:.1f}\u00b0",
+                       px + 12, y, Theme.TEXT_DIM, "small"); y += 16
+        self.text.draw("Axes: X red, Y green, Z blue",
+                       px + 12, y, Theme.TEXT_DIM, "small"); y += 14
+        self.text.draw("L: blue frustum  R: orange frustum",
                        px + 12, y, Theme.TEXT_DIM, "small"); y += 16
 
         self._draw_separator(px + 10, y, pw - 20); y += 6
@@ -1298,6 +1434,10 @@ class SimPublisher:
         print("  F1-F9: preset poses | P: trajectory playback | N: noise | V: eval panel")
         print("  WASD/QE: fine move | RFTGYH: fine rotate | Close window to exit.")
 
+        self._running = True
+        bg_thread = threading.Thread(target=self._publish_loop, daemon=True)
+        bg_thread.start()
+
         try:
             while True:
                 if not self._handle_input():
@@ -1312,8 +1452,9 @@ class SimPublisher:
                         board.position = np.array(pos, dtype=np.float32)
                         board.euler_angles = np.array(euler, dtype=np.float64)
                         board.set_pose_euler(board.position, board.euler_angles)
+                        with self._pose_lock:
+                            self._occlusion_dirty = True
 
-                self._process_and_publish()
                 self.evaluator.update()
 
                 # Log trajectory errors
@@ -1326,17 +1467,35 @@ class SimPublisher:
 
                 self._draw_god_view()
 
+                with self._ir_lock:
+                    img_L = self.ir_image_L
+                    img_R = self.ir_image_R
+                    px_L = self._led_px_L
+                    px_R = self._led_px_R
+                    px_L_occ = self._led_px_L_occ
+                    px_R_occ = self._led_px_R_occ
+
                 vw, vh = 300, 188
                 margin = 12
                 self._draw_ir_overlay(
-                    self.ir_image_L,
-                    margin, self.win_h - vh - margin, vw, vh, "LEFT",
-                    self._led_px_L,
+                    img_L,
+                    margin,
+                    self.win_h - vh - margin,
+                    vw,
+                    vh,
+                    "LEFT",
+                    px_L,
+                    px_L_occ,
                 )
                 self._draw_ir_overlay(
-                    self.ir_image_R,
-                    self.win_w - vw - margin, self.win_h - vh - margin, vw, vh, "RIGHT",
-                    self._led_px_R,
+                    img_R,
+                    self.win_w - vw - margin,
+                    self.win_h - vh - margin,
+                    vw,
+                    vh,
+                    "RIGHT",
+                    px_R,
+                    px_R_occ,
                 )
 
                 self._draw_ui()
@@ -1349,6 +1508,8 @@ class SimPublisher:
         except KeyboardInterrupt:
             pass
         finally:
+            self._running = False
+            bg_thread.join(timeout=1.0)
             self._cleanup()
 
     def _cleanup(self):
@@ -1369,6 +1530,64 @@ class SimPublisher:
 
 
 # ---------------------------------------------------------------------------
+# Config helpers
+# ---------------------------------------------------------------------------
+
+def _dual_config_path(base_path: str) -> str:
+    """Derive a dual-board config path from a base config path."""
+    root, ext = os.path.splitext(os.path.abspath(base_path))
+    if not ext:
+        ext = ".json"
+    return root + "_dual" + ext
+
+
+def _ensure_dual_board_config(base_config: str) -> str:
+    """
+    Ensure a dual-board mocap_config JSON exists on disk.
+
+    If ``<base>_dual.json`` already exists, it is reused. Otherwise, it is
+    created by duplicating the first board entry in ``base_config``.
+    """
+    base_config = os.path.abspath(base_config)
+    dual_path = _dual_config_path(base_config)
+
+    if os.path.isfile(dual_path):
+        print(f"[boards] Using existing dual-board config: {dual_path}")
+        return dual_path
+
+    try:
+        with open(base_config, "r", encoding="utf-8") as f:
+            cfg = json.load(f)
+    except FileNotFoundError:
+        print(f"[boards] WARNING: base config not found: {base_config}")
+        print("          Dual-board mode falling back to single-board config.")
+        return base_config
+
+    boards = cfg.get("boards") or []
+    if not boards:
+        print(f"[boards] WARNING: no boards in base config {base_config}")
+        return base_config
+
+    if len(boards) >= 2:
+        # Already multi-board; just reuse the same definition.
+        out_cfg = {"boards": boards}
+    else:
+        b0 = boards[0]
+        b1 = dict(b0)  # shallow copy is fine for JSON-serializable values
+        name0 = b0.get("name", "Board")
+        # Give the second board a distinguishable name while keeping it simple.
+        b1["name"] = f"{name0}_R" if name0 else "Board_R"
+        out_cfg = {"boards": [b0, b1]}
+
+    os.makedirs(os.path.dirname(dual_path), exist_ok=True)
+    with open(dual_path, "w", encoding="utf-8") as f:
+        json.dump(out_cfg, f, indent=4, ensure_ascii=False)
+
+    print(f"[boards] Dual-board config written to: {dual_path}")
+    return dual_path
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 def main():
@@ -1381,10 +1600,10 @@ def main():
                         help="Calibration JSON (default: config/calibration_sim.json)")
     parser.add_argument("--port", type=int, default=5552,
                         help="ZMQ base port for left cam; right = port+1 (default: 5552)")
-    parser.add_argument("--fps", type=int, default=30,
-                        help="Target frame rate (default: 30)")
-    parser.add_argument("--jpeg-quality", type=int, default=95,
-                        help="JPEG encode quality 0-100 (default: 95)")
+    parser.add_argument("--fps", type=int, default=60,
+                        help="Target frame rate (default: 60)")
+    parser.add_argument("--jpeg-quality", type=int, default=75,
+                        help="JPEG encode quality 0-100 (default: 85)")
     parser.add_argument("--eval-port", type=int, default=5556,
                         help="ZMQ port for C++ pose output evaluation (default: 5556)")
     parser.add_argument(
@@ -1427,7 +1646,17 @@ def main():
         default=None,
         help="Trajectory JSON file for automated pose sweep",
     )
+    parser.add_argument(
+        "--board-count",
+        type=int,
+        default=1,
+        help="Number of simulated LED boards (1=default, 2=duplicate first board)",
+    )
     args = parser.parse_args()
+
+    # Optionally switch to a dual-board config synthesized from the base file.
+    if args.board_count >= 2:
+        args.config = _ensure_dual_board_config(args.config)
 
     app = SimPublisher(args)
     app.run()

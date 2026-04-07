@@ -103,16 +103,18 @@ class SimStereoCamera:
         fx, fy = self.K[0, 0], self.K[1, 1]
         cx, cy = self.K[0, 2], self.K[1, 2]
 
-        results = []
-        for pt in np.asarray(points_3d):
-            p_cam = R @ pt + t
-            if p_cam[2] <= 0.01:
-                results.append(None)
-                continue
-            u = fx * p_cam[0] / p_cam[2] + cx
-            v = fy * p_cam[1] / p_cam[2] + cy
-            if 0 <= u < self.width and 0 <= v < self.height:
-                results.append((u, v, p_cam[2]))
-            else:
-                results.append(None)
-        return results
+        pts = np.asarray(points_3d, dtype=np.float64)
+        if len(pts) == 0:
+            return []
+
+        p_cam = (R @ pts.T).T + t          # (N, 3)
+        depth = p_cam[:, 2]
+        valid_depth = depth > 0.01
+        safe_depth = np.where(valid_depth, depth, 1.0)
+        u = fx * p_cam[:, 0] / safe_depth + cx
+        v = fy * p_cam[:, 1] / safe_depth + cy
+        in_bounds = valid_depth & (u >= 0) & (u < self.width) & (v >= 0) & (v < self.height)
+        return [
+            (float(u[i]), float(v[i]), float(depth[i])) if in_bounds[i] else None
+            for i in range(len(pts))
+        ]

@@ -1,0 +1,1 @@
+frame,waypoint,board_name,gt_x,gt_y,gt_z,gt_r,gt_p,gt_yaw,est_x,est_y,est_z,pos_err_mm,rot_err_deg,rmse_mm,inliers
