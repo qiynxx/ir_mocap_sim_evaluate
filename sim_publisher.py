@@ -401,6 +401,13 @@ class SimPublisher:
         self._last_vis_L = None
         self._last_vis_R = None
         self._occlusion_dirty = True
+        # Async occlusion: a dedicated thread runs ray casting so _publish_loop
+        # never blocks on it. Protected by _occ_lock; _occ_event signals new work.
+        self._occ_lock = threading.Lock()
+        self._occ_event = threading.Event()
+        self._occ_boards_snapshot = None   # board poses snapshot for the worker
+        self._occ_result_L = None          # latest computed vis mask (left)
+        self._occ_result_R = None          # latest computed vis mask (right)
 
         # Cache mesh geometry for OpenGL rendering (scaled to metres).
         # Display lists are compiled lazily after the GL context is ready.
@@ -656,11 +663,59 @@ class SimPublisher:
             self._occlusion_dirty = True
 
     # ------------------------------------------------------------------
+    # Async occlusion worker (dedicated thread)
+    # ------------------------------------------------------------------
+    def _occlusion_loop(self):
+        """Runs ray-mesh occlusion in a dedicated thread.
+
+        Takes a deep copy of board poses under _pose_lock (so the main
+        thread can keep moving boards without waiting), then runs
+        visibility_for_board_leds on the snapshot.
+        """
+        while self._running:
+            triggered = self._occ_event.wait(timeout=0.1)
+            if not triggered:
+                continue
+            self._occ_event.clear()
+            if not self._running:
+                break
+
+            # Deep-copy board poses under lock to avoid data races with
+            # the main thread modifying position/rotation numpy arrays.
+            with self._pose_lock:
+                boards_snap = []
+                for b in self.boards:
+                    snap = type('_BoardSnap', (), {})()
+                    snap.position = b.position.copy()
+                    snap.rotation = b.rotation.copy()
+                    snap.euler_angles = b.euler_angles.copy()
+                    snap.model_points = b.model_points  # read-only, safe to share
+                    snap.get_world_points = lambda s=snap: (
+                        np.dot(s.model_points, s.rotation.T) + s.position
+                    )
+                    snap.mesh_stl = getattr(b, 'mesh_stl', None)
+                    snap.mesh_units = getattr(b, 'mesh_units', 'mm')
+                    snap.mesh_axis_rot = getattr(b, 'mesh_axis_rot', None)
+                    boards_snap.append(snap)
+                cam_L = self.cam.pos_left.copy()
+                cam_R = self.cam.pos_right.copy()
+
+            try:
+                vis_L, vis_R = self.occlusion.visibility_for_board_leds(
+                    boards_snap, cam_L, cam_R
+                )
+            except Exception:
+                continue
+
+            with self._occ_lock:
+                self._occ_result_L = vis_L
+                self._occ_result_R = vis_R
+
+    # ------------------------------------------------------------------
     # Vision + ZMQ publish (background thread)
     # ------------------------------------------------------------------
     def _publish_loop(self):
         interval = 1.0 / max(1, self.target_fps)
-        _vis_L = _vis_R = None
         next_frame = time.monotonic()
         fps_window_start = time.monotonic()
         fps_window_count = 0
@@ -685,6 +740,11 @@ class SimPublisher:
                 dirty = self._occlusion_dirty
                 self._occlusion_dirty = False
 
+            # Signal the occlusion worker if pose changed; use last result
+            # this frame so publish cadence is never blocked by ray casting.
+            if dirty:
+                self._occ_event.set()
+
             self.noise_gen.update()
             noise_pts = self.noise_gen.get_noise_world_points()
 
@@ -697,13 +757,22 @@ class SimPublisher:
             )
 
             # ------------------------------------------------------------------
-            # LED visibility masks (CPU raycast)
+            # LED visibility masks: use latest result from occlusion worker.
+            # On the very first frame, fall back to synchronous call so we
+            # don't publish an all-visible frame before any result is ready.
             # ------------------------------------------------------------------
-            if dirty or _vis_L is None or _vis_R is None:
-                _vis_L, _vis_R = self.occlusion.visibility_for_board_leds(
+            with self._occ_lock:
+                vis_L = self._occ_result_L
+                vis_R = self._occ_result_R
+
+            if vis_L is None or vis_R is None:
+                # First frame only: block once to get an initial result.
+                vis_L, vis_R = self.occlusion.visibility_for_board_leds(
                     self.boards, self.cam.pos_left, self.cam.pos_right
                 )
-            vis_L, vis_R = _vis_L, _vis_R
+                with self._occ_lock:
+                    self._occ_result_L = vis_L
+                    self._occ_result_R = vis_R
 
             # Per-board visibility statistics (for left-side panel)
             o = 0
@@ -1449,6 +1518,10 @@ class SimPublisher:
         self._running = True
         bg_thread = threading.Thread(target=self._publish_loop, daemon=True)
         bg_thread.start()
+        occ_thread = threading.Thread(target=self._occlusion_loop, daemon=True)
+        occ_thread.start()
+        # Trigger initial occlusion computation
+        self._occ_event.set()
 
         try:
             while True:
@@ -1521,7 +1594,9 @@ class SimPublisher:
             pass
         finally:
             self._running = False
+            self._occ_event.set()  # wake occlusion thread so it can exit
             bg_thread.join(timeout=1.0)
+            occ_thread.join(timeout=1.0)
             self._cleanup()
 
     def _cleanup(self):
