@@ -41,7 +41,39 @@ python sim_publisher.py -c config/mocap_config.json --calib config/calibration_s
 python sim_publisher.py --mesh config/meshes/board.stl
 ```
 
-### 4. 启动 C++ 管线
+### 4. 一键启动完整链路
+
+推荐优先使用一键脚本，它会按顺序启动以下 3 个组件：
+
+1. `sim_publisher.py`
+2. `mocap_ir_cpp/bin/mocap_main`
+3. `mocap_ir_cpp/scripts/run_visualizer.sh`
+
+```bash
+# 使用默认配置
+./scripts/run_full_pipeline.sh
+
+# 使用指定的 mocap 配置文件
+./scripts/run_full_pipeline.sh /home/zm/mocap_ir/mocap_ir_all/mocap_config_runtime.json
+
+# 等价写法
+./scripts/run_full_pipeline.sh \
+  --mocap-config /home/zm/mocap_ir/mocap_ir_all/mocap_config_runtime.json
+```
+
+可选参数：
+
+- `--no-viz`：不启动可视化器
+- `--sim-only`：只启动 `sim_publisher.py`
+- `--calib PATH`：指定仿真标定文件
+
+说明：
+
+- 脚本会自动把同一个 `mocap` 配置文件传给仿真端和 C++ 管线。
+- 脚本会在 `mocap_ir_cpp` 目录下启动 `mocap_main`，避免其相对路径配置文件加载失败。
+- 按 `Ctrl+C` 会一并停止脚本拉起的所有进程。
+
+### 5. 手动启动 C++ 管线
 
 ```bash
 cd ../mocap_ir_cpp
@@ -54,7 +86,7 @@ cd ../mocap_ir_cpp
 
 > C++ 管线默认连接 `192.168.100.1`（真实硬件），仿真时必须指定 `--zmq-host localhost`。
 
-### 5. 启动 3D 可视化器（可选）
+### 6. 手动启动 3D 可视化器（可选）
 
 ```bash
 cd ../mocap_ir_cpp

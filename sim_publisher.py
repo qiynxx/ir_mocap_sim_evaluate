@@ -320,8 +320,17 @@ class TextRenderer:
     def __init__(self):
         self._fonts = {}
         self._cache = {}
-        for name, size in [("small", 12), ("normal", 14), ("medium", 16)]:
-            self._fonts[name] = pygame.font.SysFont("Arial", size)
+        self._line_heights = {}
+        for name, size in [
+            ("small", 12),
+            ("normal", 14),
+            ("medium", 16),
+            ("panel_small", 32),
+            ("panel_medium", 36),
+        ]:
+            font = pygame.font.SysFont("Arial", size)
+            self._fonts[name] = font
+            self._line_heights[name] = font.get_linesize()
 
     def draw(self, text, x, y, color=Theme.TEXT, font="normal"):
         key = (text, font, color)
@@ -351,6 +360,12 @@ class TextRenderer:
         glEnd()
         glDisable(GL_TEXTURE_2D)
         glDisable(GL_BLEND)
+
+    def line_height(self, font="normal"):
+        return self._line_heights[font]
+
+    def size(self, text, font="normal"):
+        return self._fonts[font].size(text)
 
     def clear(self):
         for tex, _, _ in self._cache.values():
@@ -1236,8 +1251,9 @@ class SimPublisher:
         glEnd()
 
         # Label tab
-        label_w = len(label) * 7 + 16
-        label_h = 20
+        label_font = "panel_small"
+        label_w = self.text.size(label, label_font)[0] + 16
+        label_h = self.text.line_height(label_font) + 6
         glColor4f(*[c / 255.0 for c in Theme.IR_BORDER], 0.85)
         glBegin(GL_QUADS)
         glVertex2f(x, y - label_h); glVertex2f(x + label_w, y - label_h)
@@ -1245,7 +1261,7 @@ class SimPublisher:
         glEnd()
 
         glDisable(GL_BLEND)
-        self.text.draw(label, x + 8, y - label_h + 3, Theme.TITLE_TXT, "small")
+        self.text.draw(label, x + 8, y - label_h + 3, Theme.TITLE_TXT, label_font)
 
         glEnable(GL_DEPTH_TEST)
         glEnable(GL_LIGHTING)
@@ -1303,14 +1319,18 @@ class SimPublisher:
                        self.win_w - 110, 8, fps_color, "normal")
 
         # ---- Left panel (compact: status only, no help text) ----
+        panel_text_font = "panel_small"
+        panel_title_font = "panel_medium"
+        panel_line_h = self.text.line_height(panel_text_font)
+        panel_title_h = self.text.line_height(panel_title_font)
+
         px, py = 8, 40
-        pw = 260
+        pw = 560
         # Compute panel height dynamically
-        y_cursor = py + 10
         section_h = (
-            18 + 14 * 3 + 6    # MODE
-            + 18 + 14 * 5 + 10  # CAMERAS (L/R/BL + axes + colors)
-            + 18 + len(self.boards) * 56 + 4  # BOARDS
+            panel_title_h + panel_line_h * 3 + 10      # STATUS
+            + panel_title_h + panel_line_h * 5 + 12    # CAMERAS
+            + panel_title_h + len(self.boards) * (panel_line_h * 4 + 4) + 4  # BOARDS
         )
         ph = section_h + 16
         ir_limit = self.win_h - 220 - 8  # don't overlap bottom IR previews
@@ -1320,62 +1340,63 @@ class SimPublisher:
         y = py + 10
 
         # Mode section
-        self.text.draw("STATUS", px + 10, y, Theme.SECTION, "small"); y += 18
+        self.text.draw("STATUS", px + 10, y, Theme.SECTION, panel_title_font); y += panel_title_h
         traj = self.trajectory
         traj_clr = Theme.SUCCESS if traj.active else (Theme.WARNING if traj.waypoints else Theme.TEXT_DIM)
-        self.text.draw(f"Traj: {traj.status_text}", px + 12, y, traj_clr, "small"); y += 14
+        self.text.draw(f"Traj: {traj.status_text}", px + 12, y, traj_clr, panel_text_font); y += panel_line_h
         if self._preset_index >= 0:
             pname = PRESET_POSES[self._preset_index]["name"]
             self.text.draw(f"Preset: F{self._preset_index+1} {pname}",
-                           px + 12, y, Theme.ACCENT, "small")
+                           px + 12, y, Theme.ACCENT, panel_text_font)
         else:
-            self.text.draw("Preset: --", px + 12, y, Theme.TEXT_DIM, "small")
-        y += 14
+            self.text.draw("Preset: --", px + 12, y, Theme.TEXT_DIM, panel_text_font)
+        y += panel_line_h
         st = "ON" if self.noise_gen.active else "OFF"
         sc = Theme.SUCCESS if self.noise_gen.active else Theme.TEXT_DIM
-        self.text.draw(f"Noise: {st}", px + 12, y, sc, "small"); y += 16
+        self.text.draw(f"Noise: {st}", px + 12, y, sc, panel_text_font); y += panel_line_h + 2
 
         self._draw_separator(px + 10, y, pw - 20); y += 6
 
         # Camera section
-        self.text.draw("CAMERAS", px + 10, y, Theme.SECTION, "small"); y += 18
+        self.text.draw("CAMERAS", px + 10, y, Theme.SECTION, panel_title_font); y += panel_title_h
         pL = self.cam.pos_left
         pR = self.cam.pos_right
         self.text.draw(f"L [{pL[0]:.3f}, {pL[1]:.3f}, {pL[2]:.3f}]",
-                       px + 12, y, (80, 180, 255), "small"); y += 14
+                       px + 12, y, (80, 180, 255), panel_text_font); y += panel_line_h
         self.text.draw(f"R [{pR[0]:.3f}, {pR[1]:.3f}, {pR[2]:.3f}]",
-                       px + 12, y, (255, 170, 80), "small"); y += 14
+                       px + 12, y, (255, 170, 80), panel_text_font); y += panel_line_h
         cam_center = (pL + pR) / 2.0
         self.text.draw(f"BL {self.cam.baseline*100:.2f}cm  FOV {self.cam.fov:.1f}\u00b0",
-                       px + 12, y, Theme.TEXT_DIM, "small"); y += 16
+                       px + 12, y, Theme.TEXT_DIM, panel_text_font); y += panel_line_h + 2
         self.text.draw("Axes: X red, Y green, Z blue",
-                       px + 12, y, Theme.TEXT_DIM, "small"); y += 14
+                       px + 12, y, Theme.TEXT_DIM, panel_text_font); y += panel_line_h
         self.text.draw("L: blue frustum  R: orange frustum",
-                       px + 12, y, Theme.TEXT_DIM, "small"); y += 16
+                       px + 12, y, Theme.TEXT_DIM, panel_text_font); y += panel_line_h + 2
 
         self._draw_separator(px + 10, y, pw - 20); y += 6
 
         # Boards section
-        self.text.draw("BOARDS", px + 10, y, Theme.SECTION, "small"); y += 18
+        self.text.draw("BOARDS", px + 10, y, Theme.SECTION, panel_title_font); y += panel_title_h
         for bi, board in enumerate(self.boards):
-            if y + 50 > py + ph - 4:
+            block_h = panel_line_h * 4 + 4
+            if y + block_h > py + ph - 4:
                 break
             sel = bi == self.selected_board
             if sel:
-                self._draw_rect(px + 4, y - 2, pw - 8, 52, Theme.PANEL_ACC, 0.5)
+                self._draw_rect(px + 4, y - 2, pw - 8, block_h, Theme.PANEL_ACC, 0.5)
             clr = Theme.ACCENT if sel else Theme.TEXT
-            self.text.draw(f"{'>' if sel else ' '} {board.name}", px + 12, y, clr, "small"); y += 14
+            self.text.draw(f"{'>' if sel else ' '} {board.name}", px + 12, y, clr, panel_text_font); y += panel_line_h
             p = board.position
             e = board.euler_angles
             self.text.draw(f"  XYZ [{p[0]:.3f}, {p[1]:.3f}, {p[2]:.3f}]",
-                           px + 12, y, Theme.TEXT_DIM, "small"); y += 13
+                           px + 12, y, Theme.TEXT_DIM, panel_text_font); y += panel_line_h
             self.text.draw(f"  RPY [{e[0]:.1f}, {e[1]:.1f}, {e[2]:.1f}]\u00b0",
-                           px + 12, y, Theme.TEXT_DIM, "small"); y += 13
+                           px + 12, y, Theme.TEXT_DIM, panel_text_font); y += panel_line_h
             dist = float(np.linalg.norm(p - cam_center))
             vis_L, vis_R, total = self._vis_stats[bi]
             dist_clr = Theme.SUCCESS if dist < 3.0 else (Theme.WARNING if dist < 5.0 else Theme.ERROR)
             self.text.draw(f"  {dist:.2f}m  L={vis_L}/{total} R={vis_R}/{total}",
-                           px + 12, y, dist_clr, "small"); y += 16
+                           px + 12, y, dist_clr, panel_text_font); y += panel_line_h + 4
 
         glEnable(GL_DEPTH_TEST)
         glEnable(GL_LIGHTING)
@@ -1398,7 +1419,12 @@ class SimPublisher:
         glDisable(GL_DEPTH_TEST)
         glDisable(GL_LIGHTING)
 
-        pw = 280
+        panel_text_font = "panel_small"
+        panel_title_font = "panel_medium"
+        panel_line_h = self.text.line_height(panel_text_font)
+        panel_title_h = self.text.line_height(panel_title_font)
+
+        pw = 620
         px = self.win_w - pw - 8
         py = 40
         y = py + 10
@@ -1414,16 +1440,16 @@ class SimPublisher:
             conn_txt = "Waiting for C++ pipeline..."
 
         n_boards = len(ev.errors) if has_data else 0
-        ph = 70 + n_boards * 155
+        ph = 24 + panel_title_h + panel_line_h + 14 + n_boards * (panel_line_h * 7 + 22)
         if not has_data:
-            ph = 90
+            ph = 28 + panel_title_h + panel_line_h + 16
 
         self._draw_panel(px, py, pw, ph, alpha=0.93, accent_color=Theme.SUCCESS)
 
-        self.text.draw("EVALUATION", px + 12, y, Theme.SECTION, "medium")
-        y += 22
-        self.text.draw(conn_txt, px + 16, y, conn_clr, "small")
-        y += 22
+        self.text.draw("EVALUATION", px + 12, y, Theme.SECTION, panel_title_font)
+        y += panel_title_h + 2
+        self.text.draw(conn_txt, px + 16, y, conn_clr, panel_text_font)
+        y += panel_line_h + 6
 
         if has_data:
             for i, (name, err) in enumerate(ev.errors.items()):
@@ -1434,53 +1460,53 @@ class SimPublisher:
                 avg_rot = ev.get_avg_rot_error_deg(name)
                 max_pos = ev.get_max_pos_error_mm(name)
 
-                self.text.draw(name, px + 16, y, Theme.ACCENT, "small")
-                y += 18
+                self.text.draw(name, px + 16, y, Theme.ACCENT, panel_text_font)
+                y += panel_line_h + 2
 
                 ep = err.estimated_pos
                 gp = err.gt_pos
                 self.text.draw(
                     f"Est [{ep[0]:.3f},{ep[1]:.3f},{ep[2]:.3f}]",
-                    px + 22, y, Theme.RECON, "small")
-                y += 14
+                    px + 22, y, Theme.RECON, panel_text_font)
+                y += panel_line_h
                 self.text.draw(
                     f"GT  [{gp[0]:.3f},{gp[1]:.3f},{gp[2]:.3f}]",
-                    px + 22, y, Theme.SUCCESS, "small")
-                y += 16
+                    px + 22, y, Theme.SUCCESS, panel_text_font)
+                y += panel_line_h + 2
 
                 pe = err.pos_error_mm
                 pe_clr = Theme.SUCCESS if pe < 5 else (Theme.WARNING if pe < 15 else Theme.ERROR)
                 self._draw_rect(px + 16, y - 1, pw - 32, 15, pe_clr, 0.12)
-                self.text.draw(f"Pos err: {pe:.1f} mm", px + 22, y, pe_clr, "small")
-                y += 16
+                self.text.draw(f"Pos err: {pe:.1f} mm", px + 22, y, pe_clr, panel_text_font)
+                y += panel_line_h + 2
 
                 dx, dy, dz = err.pos_error_xyz_mm
                 self.text.draw(
                     f"  dX={dx:+.1f} dY={dy:+.1f} dZ={dz:+.1f}",
-                    px + 22, y, Theme.TEXT_DIM, "small")
-                y += 15
+                    px + 22, y, Theme.TEXT_DIM, panel_text_font)
+                y += panel_line_h
 
                 re = err.rot_error_deg
                 re_clr = Theme.SUCCESS if re < 2 else (Theme.WARNING if re < 5 else Theme.ERROR)
                 self._draw_rect(px + 16, y - 1, pw - 32, 15, re_clr, 0.12)
-                self.text.draw(f"Rot err: {re:.2f} deg", px + 22, y, re_clr, "small")
-                y += 16
+                self.text.draw(f"Rot err: {re:.2f} deg", px + 22, y, re_clr, panel_text_font)
+                y += panel_line_h + 2
 
                 dr, dp, dyw = err.rot_error_euler_deg
                 self.text.draw(
                     f"  dR={dr:+.1f} dP={dp:+.1f} dY={dyw:+.1f}",
-                    px + 22, y, Theme.TEXT_DIM, "small")
-                y += 15
+                    px + 22, y, Theme.TEXT_DIM, panel_text_font)
+                y += panel_line_h
 
                 self.text.draw(
                     f"Avg: {avg_pos:.1f}mm  Max: {max_pos:.1f}mm",
-                    px + 22, y, Theme.TEXT_DIM, "small")
-                y += 15
+                    px + 22, y, Theme.TEXT_DIM, panel_text_font)
+                y += panel_line_h
 
                 self.text.draw(
                     f"RMSE: {err.rmse_mm:.1f}mm  Inliers: {err.num_inliers}",
-                    px + 22, y, Theme.TEXT_DIM, "small")
-                y += 20
+                    px + 22, y, Theme.TEXT_DIM, panel_text_font)
+                y += panel_line_h + 4
 
         glEnable(GL_DEPTH_TEST)
         glEnable(GL_LIGHTING)
